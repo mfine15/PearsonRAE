@@ -4,14 +4,17 @@
 
 A Chrome extension that tracks your luck in Catan by calculating how many resources you've received compared to statistical expectation based on your settlements and cities.
 
+Supports both **Base Catan** and **Cities & Knights** expansion.
+
 ## Features
 
 - **RAE Tracking** - Shows cumulative resources received vs expected for each player
 - **Percentile Ranking** - Statistical confidence indicator showing how lucky/unlucky outcomes are
-- **Per-Resource Breakdown** - See luck by individual resource type
+- **Per-Resource Breakdown** - See luck by individual resource type (and commodities in C&K)
 - **Graph View** - Visualize luck over time with SVG chart
-- **7s Tracking** - Track vulnerability (cards > 7), discards, and 7s luck
+- **7s Tracking** - Track vulnerability, discards, and 7s luck (respects city wall bonuses)
 - **Collapsible UI** - Right-side overlay that collapses to show just a summary
+- **Cities & Knights Support** - Tracks commodities (cloth, coin, paper) and adjusted city production
 
 ## Installation
 
@@ -55,6 +58,13 @@ Uses z-score and normal CDF to calculate how statistically significant your luck
 - Confidence indicator (●●●) shows sample size reliability
 - Early game percentiles are less meaningful (law of large numbers)
 
+### Cities & Knights
+
+The extension auto-detects C&K games and adjusts calculations:
+- **City Production** - In C&K, cities on sheep/ore/wood hexes produce 1 resource + 1 commodity (instead of 2 resources)
+- **Commodities** - Tracks cloth (from sheep), coin (from ore), and paper (from wood)
+- **City Walls** - The 7s vulnerability tracking uses each player's actual discard limit (7 + city walls)
+
 ## Console API
 
 Access raw data via browser console:
@@ -63,6 +73,7 @@ PearsonRAE.getStats()     // All player statistics
 PearsonRAE.getRolls()     // Dice roll history
 PearsonRAE.getSevens()    // 7s analysis
 PearsonRAE.toggle()       // Toggle collapsed state
+PearsonRAE.isCK()         // Check if Cities & Knights game
 ```
 
 ## Files

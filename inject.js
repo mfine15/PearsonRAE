@@ -24,6 +24,20 @@
     5: { name: 'Ore', color: '#6b6b6b', emoji: '🪨' }
   };
 
+  // C&K commodities (card types 6, 7, 8)
+  const COMMODITY_TYPES = {
+    6: { name: 'Cloth', color: '#9b59b6', emoji: '🧶', fromResource: 3 },  // From Sheep
+    7: { name: 'Coin', color: '#f1c40f', emoji: '🪙', fromResource: 5 },   // From Ore
+    8: { name: 'Paper', color: '#ecf0f1', emoji: '📜', fromResource: 1 }   // From Wood
+  };
+
+  // Mapping from resource type to commodity type for C&K cities
+  const RESOURCE_TO_COMMODITY = {
+    3: 6,  // Sheep -> Cloth
+    5: 7,  // Ore -> Coin
+    1: 8   // Wood -> Paper
+  };
+
   const PLAYER_COLORS = {
     1: { name: 'Red', hex: '#e74c3c' },
     2: { name: 'Blue', hex: '#3498db' },
@@ -40,6 +54,26 @@
     return Object.keys(playerStates)
       .map(k => parseInt(k))
       .filter(id => id >= 1 && id <= 4 && playerStates[id]);
+  }
+
+  // Detect if this is a Cities & Knights game
+  function isCitiesAndKnights() {
+    if (!gameStore) return false;
+    const gs = gameStore.getState().gameState;
+    // C&K games have barbarianInvasionState or mechanicBarbarianInvasionState
+    return !!(gs.mechanicBarbarianInvasionState || gs.barbarianInvasionState);
+  }
+
+  // Get card discard limit for a player (7 in base game, can be higher in C&K with city walls)
+  function getCardDiscardLimit(playerColor) {
+    if (!gameStore) return 7;
+    const gs = gameStore.getState().gameState;
+    const playerState = gs.playerStates?.[playerColor];
+    // C&K stores cardDiscardLimit per player (increases with city walls)
+    if (playerState?.cardDiscardLimit !== undefined) {
+      return playerState.cardDiscardLimit;
+    }
+    return 7; // default
   }
 
   // Get current card count for a player directly from state
@@ -213,13 +247,34 @@
 
   function calcExpectedByResource(playerColor) {
     const buildings = getPlayerBuildings(playerColor);
+    const isCK = isCitiesAndKnights();
     const expected = { total: 0 };
+    // Initialize resources
     Object.keys(RESOURCE_TYPES).forEach(t => { if (t !== '0') expected[t] = 0; });
+    // Initialize commodities for C&K
+    if (isCK) {
+      Object.keys(COMMODITY_TYPES).forEach(t => { expected[t] = 0; });
+    }
+
     buildings.forEach(b => {
+      const isCity = b.type === 'City';
       b.hexes.forEach(hex => {
-        const prob = hex.probability * b.multiplier;
-        expected[hex.type] = (expected[hex.type] || 0) + prob;
-        expected.total += prob;
+        const prob = hex.probability;
+        const resType = hex.type;
+        const commodityType = RESOURCE_TO_COMMODITY[resType];
+
+        if (isCity && isCK && commodityType) {
+          // C&K city on commodity-producing hex: 1 resource + 1 commodity expected
+          expected[resType] = (expected[resType] || 0) + prob;
+          expected[commodityType] = (expected[commodityType] || 0) + prob;
+          expected.total += prob * 2;
+        } else {
+          // Settlement: 1 resource
+          // City (base game or non-commodity hex): 2 resources
+          const multiplier = b.multiplier;
+          expected[resType] = (expected[resType] || 0) + prob * multiplier;
+          expected.total += prob * multiplier;
+        }
       });
     });
     return expected;
@@ -249,15 +304,35 @@
     const gs = gameStore.getState().gameState;
     const corners = gs.mapState.tileCornerStates;
     const hexes = gs.mapState.tileHexStates;
+    const isCK = isCitiesAndKnights();
     const resources = { total: 0 };
+    // Initialize all resource types
     Object.keys(RESOURCE_TYPES).forEach(t => { if (t !== '0') resources[t] = 0; });
+    // Initialize commodity types for C&K
+    if (isCK) {
+      Object.keys(COMMODITY_TYPES).forEach(t => { resources[t] = 0; });
+    }
+
     Object.values(corners).forEach(corner => {
       if (corner.owner !== playerColor) return;
-      const multiplier = corner.buildingType === 2 ? 2 : 1;
+      const isCity = corner.buildingType === 2;
       getAdjacentHexes(corner, hexes).forEach(hex => {
         if (hex.diceNumber === diceSum) {
-          resources[hex.type] = (resources[hex.type] || 0) + multiplier;
-          resources.total += multiplier;
+          const resType = hex.type;
+          const commodityType = RESOURCE_TO_COMMODITY[resType];
+
+          if (isCity && isCK && commodityType) {
+            // C&K city on commodity-producing hex: 1 resource + 1 commodity
+            resources[resType] = (resources[resType] || 0) + 1;
+            resources[commodityType] = (resources[commodityType] || 0) + 1;
+            resources.total += 2;
+          } else {
+            // Settlement: 1 resource
+            // City (base game or non-commodity hex): 2 resources
+            const multiplier = isCity ? 2 : 1;
+            resources[resType] = (resources[resType] || 0) + multiplier;
+            resources.total += multiplier;
+          }
         }
       });
     });
@@ -279,14 +354,16 @@
     // Track per-player stats
     const playerStats = {};
     activePlayers.forEach(p => {
+      const discardLimit = getCardDiscardLimit(p);
       playerStats[p] = {
-        rollsWhileOver7: 0,
-        sevensWhileOver7: 0,
+        rollsWhileVulnerable: 0,
+        sevensWhileVulnerable: 0,
         expectedSevens: 0,
         timesDiscarded: 0,
         cardsDiscarded: 0,
         sevenLuck: 0,
-        currentCards: getPlayerCardCount(p)
+        currentCards: getPlayerCardCount(p),
+        discardLimit: discardLimit  // Track per-player limit (for city walls)
       };
     });
 
@@ -315,11 +392,13 @@
         rollsWithData++;
         activePlayers.forEach(p => {
           const cards = roll.cardCounts[p];
-          if (cards !== undefined && cards > 7) {
-            playerStats[p].rollsWhileOver7++;
+          const limit = playerStats[p].discardLimit;
+          // Vulnerable if cards > discard limit (7 in base, higher with city walls)
+          if (cards !== undefined && cards > limit) {
+            playerStats[p].rollsWhileVulnerable++;
             playerStats[p].expectedSevens += 6 / 36;
             if (roll.diceSum === 7) {
-              playerStats[p].sevensWhileOver7++;
+              playerStats[p].sevensWhileVulnerable++;
             }
           }
         });
@@ -328,7 +407,7 @@
 
     // Calculate luck
     activePlayers.forEach(p => {
-      playerStats[p].sevenLuck = playerStats[p].sevensWhileOver7 - playerStats[p].expectedSevens;
+      playerStats[p].sevenLuck = playerStats[p].sevensWhileVulnerable - playerStats[p].expectedSevens;
       playerStats[p].currentCards = getPlayerCardCount(p);
     });
 
@@ -352,13 +431,21 @@
   function calcDetailedStats(playerColor) {
     const rolls = getDiceRolls();
     const expectedPerTurn = calcExpectedByResource(playerColor);
+    const isCK = isCitiesAndKnights();
     let cumActual = { total: 0 }, cumExpected = { total: 0 };
+    // Initialize resources
     Object.keys(RESOURCE_TYPES).forEach(t => { if (t !== '0') { cumActual[t] = 0; cumExpected[t] = 0; } });
+    // Initialize commodities for C&K
+    if (isCK) {
+      Object.keys(COMMODITY_TYPES).forEach(t => { cumActual[t] = 0; cumExpected[t] = 0; });
+    }
+
+    const allTypes = isCK ? { ...RESOURCE_TYPES, ...COMMODITY_TYPES } : RESOURCE_TYPES;
 
     const history = rolls.map((roll, i) => {
       const actualThisRoll = calcResourcesForRoll(playerColor, roll.sum);
       cumActual.total += actualThisRoll.total;
-      Object.keys(RESOURCE_TYPES).forEach(t => {
+      Object.keys(allTypes).forEach(t => {
         if (t !== '0') {
           cumActual[t] += actualThisRoll[t] || 0;
           cumExpected[t] += expectedPerTurn[t] || 0;
@@ -531,6 +618,11 @@
       return '<div style="text-align:center;padding:30px;color:#666;">Waiting for game data...</div>';
     }
 
+    const isCK = isCitiesAndKnights();
+    const resourceTypes = [1, 2, 3, 4, 5];
+    const commodityTypes = isCK ? [6, 7, 8] : [];
+    const allTypes = { ...RESOURCE_TYPES, ...COMMODITY_TYPES };
+
     let html = '<div style="display:flex;flex-direction:column;gap:10px;">';
     stats.forEach(s => {
       html += `<div style="background:rgba(255,255,255,0.05);border-radius:8px;padding:10px;">
@@ -539,8 +631,8 @@
           <span style="color:#555;font-size:10px;">${s.totalReceived} total</span>
         </div>
         <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:4px;">`;
-      [1,2,3,4,5].forEach(resType => {
-        const resInfo = RESOURCE_TYPES[resType];
+      resourceTypes.forEach(resType => {
+        const resInfo = allTypes[resType];
         const got = s.byResource[resType] || 0;
         const exp = s.expectedByResource[resType] || 0;
         const diff = got - exp;
@@ -551,14 +643,33 @@
             <div style="font-size:9px;color:${diff >= 0 ? '#2ecc71' : '#e74c3c'};">${diff >= 0 ? '+' : ''}${diff.toFixed(1)}</div>
           </div>`;
       });
-      html += '</div></div>';
+      html += '</div>';
+
+      // Show commodities row for C&K
+      if (isCK) {
+        html += `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin-top:6px;">`;
+        commodityTypes.forEach(comType => {
+          const comInfo = allTypes[comType];
+          const got = s.byResource[comType] || 0;
+          const exp = s.expectedByResource[comType] || 0;
+          const diff = got - exp;
+          html += `
+            <div style="text-align:center;padding:6px 4px;background:rgba(155,89,182,0.15);border-radius:4px;">
+              <div style="font-size:14px;">${comInfo.emoji}</div>
+              <div style="font-size:13px;font-weight:600;color:#fff;">${got}</div>
+              <div style="font-size:9px;color:${diff >= 0 ? '#2ecc71' : '#e74c3c'};">${diff >= 0 ? '+' : ''}${diff.toFixed(1)}</div>
+            </div>`;
+        });
+        html += '</div>';
+      }
+      html += '</div>';
     });
     return html + '</div>';
   }
 
   function renderGraphView(stats) {
-    const width = 420, height = 220;
-    const padding = { top: 20, right: 20, bottom: 35, left: 45 };
+    const width = 290, height = 180;
+    const padding = { top: 15, right: 10, bottom: 25, left: 35 };
     const graphWidth = width - padding.left - padding.right;
     const graphHeight = height - padding.top - padding.bottom;
 
@@ -655,8 +766,10 @@
       const ps = sevensData.playerSevenStats[p];
       if (!ps) return;
       const pc = PLAYER_COLORS[p];
-      const isVulnerable = ps.currentCards > 7;
+      const limit = ps.discardLimit || 7;
+      const isVulnerable = ps.currentCards > limit;
       const luck = ps.sevenLuck;
+      const hasWallBonus = limit > 7;
 
       html += `
         <div style="background:rgba(255,255,255,0.05);border-radius:8px;padding:10px;">
@@ -664,17 +777,17 @@
             <div style="display:flex;align-items:center;gap:8px;">
               <span style="color:${pc.hex};font-weight:600;">${pc.name}</span>
               <span style="font-size:12px;padding:3px 8px;border-radius:4px;background:${isVulnerable ? 'rgba(231,76,60,0.3)' : 'rgba(255,255,255,0.08)'};color:${isVulnerable ? '#e74c3c' : '#aaa'};font-weight:600;">
-                ${ps.currentCards} cards${isVulnerable ? ' ⚠️' : ''}
+                ${ps.currentCards}/${limit}${hasWallBonus ? '🏰' : ''}${isVulnerable ? ' ⚠️' : ''}
               </span>
             </div>
             <span style="font-size:13px;font-weight:600;color:${luck < -0.1 ? '#2ecc71' : luck > 0.1 ? '#e74c3c' : '#666'};">
               ${luck > 0 ? '+' : ''}${luck.toFixed(1)}
             </span>
           </div>
-          ${ps.rollsWhileOver7 > 0 ? `
+          ${ps.rollsWhileVulnerable > 0 ? `
           <div style="margin-top:8px;display:flex;gap:16px;font-size:10px;color:#888;">
-            <div><span style="color:#fff;">${ps.rollsWhileOver7}</span> vulnerable rolls</div>
-            <div><span style="color:#fff;">${ps.sevensWhileOver7}</span>/${ps.expectedSevens.toFixed(1)} 7s hit</div>
+            <div><span style="color:#fff;">${ps.rollsWhileVulnerable}</span> vulnerable rolls</div>
+            <div><span style="color:#fff;">${ps.sevensWhileVulnerable}</span>/${ps.expectedSevens.toFixed(1)} 7s hit</div>
             ${ps.timesDiscarded > 0 ? `<div style="color:#e74c3c;">${ps.cardsDiscarded} discarded</div>` : ''}
           </div>` : `
           <div style="margin-top:6px;font-size:10px;color:#555;">
@@ -777,7 +890,7 @@
     log('PearsonRAE initialized successfully');
   }
 
-  window.PearsonRAE = { getStats: getAllPlayersStats, getRolls: getDiceRolls, getSevens: analyzeSevens, getDebugLog: () => debugLog, getDetailedStats: calcDetailedStats, refresh: init, toggle: toggleCollapse };
+  window.PearsonRAE = { getStats: getAllPlayersStats, getRolls: getDiceRolls, getSevens: analyzeSevens, getDebugLog: () => debugLog, getDetailedStats: calcDetailedStats, refresh: init, toggle: toggleCollapse, isCK: isCitiesAndKnights };
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => setTimeout(init, 2000));
   else setTimeout(init, 2000);
