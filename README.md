@@ -64,6 +64,14 @@ The extension auto-detects C&K games and adjusts calculations:
 - **City Production** - In C&K, cities on sheep/ore/wood hexes produce 1 resource + 1 commodity (instead of 2 resources)
 - **Commodities** - Tracks cloth (from sheep), coin (from ore), and paper (from wood)
 - **City Walls** - The 7s vulnerability tracking uses each player's actual discard limit (7 + city walls)
+- **Inventor** - Dice number swaps are handled correctly (reads current board state)
+
+### Robber Handling
+
+Hexes blocked by the robber are excluded from both actual and expected resource calculations:
+- Being blocked doesn't count as "unlucky" - it's a game mechanic, not dice luck
+- Expected resources per turn reflects your current unblocked hexes
+- Note: Historical RAE uses current robber position as an approximation
 
 ## Console API
 
@@ -74,6 +82,7 @@ PearsonRAE.getRolls()     // Dice roll history
 PearsonRAE.getSevens()    // 7s analysis
 PearsonRAE.toggle()       // Toggle collapsed state
 PearsonRAE.isCK()         // Check if Cities & Knights game
+PearsonRAE.getRobberHex() // Get robber hex index
 ```
 
 ## Files

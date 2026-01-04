@@ -76,6 +76,23 @@
     return 7; // default
   }
 
+  // Get the hex index where the robber is currently located
+  function getRobberHexIndex() {
+    if (!gameStore) return null;
+    const gs = gameStore.getState().gameState;
+    const robberState = gs.mechanicRobberState;
+    if (robberState && robberState.locationTileIndex !== undefined) {
+      return robberState.locationTileIndex;
+    }
+    return null;
+  }
+
+  // Check if a hex (by its index in tileHexStates) is blocked by the robber
+  function isHexBlocked(hexIndex) {
+    const robberIndex = getRobberHexIndex();
+    return robberIndex !== null && parseInt(hexIndex) === robberIndex;
+  }
+
   // Get current card count for a player directly from state
   function getPlayerCardCount(playerColor) {
     if (!gameStore) return 0;
@@ -216,7 +233,12 @@
       ? [{ x, y }, { x, y: y - 1 }, { x: x + 1, y: y - 1 }]
       : [{ x, y }, { x: x - 1, y: y + 1 }, { x, y: y + 1 }];
     return adjacentCoords
-      .map(c => Object.values(hexes).find(h => h.x === c.x && h.y === c.y))
+      .map(c => {
+        // Find hex and its index
+        const entry = Object.entries(hexes).find(([idx, h]) => h.x === c.x && h.y === c.y);
+        if (!entry) return null;
+        return { ...entry[1], hexIndex: parseInt(entry[0]) };
+      })
       .filter(h => h && h.type !== 0);
   }
 
@@ -236,6 +258,7 @@
         coords: { x: corner.x, y: corner.y, z: corner.z },
         hexes: adjHexes.map(h => ({
           type: h.type,
+          hexIndex: h.hexIndex,
           resource: RESOURCE_TYPES[h.type]?.name || 'Unknown',
           diceNumber: h.diceNumber,
           probability: diceProbability(h.diceNumber)
@@ -259,6 +282,9 @@
     buildings.forEach(b => {
       const isCity = b.type === 'City';
       b.hexes.forEach(hex => {
+        // Skip hexes blocked by robber - being blocked isn't dice luck
+        if (isHexBlocked(hex.hexIndex)) return;
+
         const prob = hex.probability;
         const resType = hex.type;
         const commodityType = RESOURCE_TO_COMMODITY[resType];
@@ -317,6 +343,9 @@
       if (corner.owner !== playerColor) return;
       const isCity = corner.buildingType === 2;
       getAdjacentHexes(corner, hexes).forEach(hex => {
+        // Skip hexes blocked by robber
+        if (isHexBlocked(hex.hexIndex)) return;
+
         if (hex.diceNumber === diceSum) {
           const resType = hex.type;
           const commodityType = RESOURCE_TO_COMMODITY[resType];
@@ -890,7 +919,7 @@
     log('PearsonRAE initialized successfully');
   }
 
-  window.PearsonRAE = { getStats: getAllPlayersStats, getRolls: getDiceRolls, getSevens: analyzeSevens, getDebugLog: () => debugLog, getDetailedStats: calcDetailedStats, refresh: init, toggle: toggleCollapse, isCK: isCitiesAndKnights };
+  window.PearsonRAE = { getStats: getAllPlayersStats, getRolls: getDiceRolls, getSevens: analyzeSevens, getDebugLog: () => debugLog, getDetailedStats: calcDetailedStats, refresh: init, toggle: toggleCollapse, isCK: isCitiesAndKnights, getRobberHex: getRobberHexIndex };
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => setTimeout(init, 2000));
   else setTimeout(init, 2000);
