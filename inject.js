@@ -48,22 +48,49 @@
     1: 8   // Wood -> Paper
   };
 
-  const PLAYER_COLORS = {
-    1: { name: 'Red', hex: '#e74c3c' },
-    2: { name: 'Blue', hex: '#3498db' },
-    3: { name: 'Orange', hex: '#e67e22' },
-    4: { name: 'White', hex: '#ecf0f1' }
+  // Fallback colors by player index
+  const FALLBACK_COLORS = {
+    0: '#e74c3c', 1: '#3498db', 2: '#e67e22', 3: '#ecf0f1', 4: '#27ae60', 5: '#8b4513'
   };
+
+  // Cache for player info
+  let playerInfoCache = {};
+
+  // Get player info (name, color) from game state
+  function getPlayerInfo(playerId) {
+    if (playerInfoCache[playerId]) return playerInfoCache[playerId];
+
+    if (!gameStore) return { name: `P${playerId}`, hex: FALLBACK_COLORS[playerId] || '#888' };
+
+    const state = gameStore.getState();
+    const gs = state.gameState;
+
+    // Try to get from players array
+    const players = gs.players || state.players || [];
+    const player = players.find(p => p && p.color === playerId);
+
+    if (player) {
+      const info = {
+        name: player.username || player.name || `P${playerId}`,
+        hex: player.selectedColor || FALLBACK_COLORS[playerId] || '#888'
+      };
+      playerInfoCache[playerId] = info;
+      return info;
+    }
+
+    // Fallback
+    return { name: `P${playerId}`, hex: FALLBACK_COLORS[playerId] || '#888' };
+  }
 
   // Get active players from playerStates
   function getActivePlayers() {
     if (!gameStore) return [];
     const gs = gameStore.getState().gameState;
     const playerStates = gs.playerStates;
-    if (!playerStates) return [1, 2, 3, 4]; // fallback
+    if (!playerStates) return [0, 1, 2, 3]; // fallback
     return Object.keys(playerStates)
       .map(k => parseInt(k))
-      .filter(id => id >= 1 && id <= 4 && playerStates[id]);
+      .filter(id => playerStates[id]);
   }
 
   // Detect if this is a Cities & Knights game
@@ -154,6 +181,7 @@
   function resetRollHistory() {
     rollHistory = [];
     lastKnownRollCount = 0;
+    playerInfoCache = {}; // Clear player name cache
   }
 
   function diceProbability(n) {
@@ -578,7 +606,7 @@
       const luckProb = calcLuckProbability(c, rolls);
       const currentCards = getPlayerCardCount(c);
       return {
-        player: c, color: PLAYER_COLORS[c].name, colorHex: PLAYER_COLORS[c].hex,
+        player: c, color: getPlayerInfo(c).name, colorHex: getPlayerInfo(c).hex,
         expectedPerTurn: stats.expectedPerTurn.total.toFixed(3),
         totalReceived: last?.cumActual || 0,
         totalExpected: last?.cumExpected.toFixed(2) || '0',
@@ -917,7 +945,7 @@
     activePlayers.forEach(p => {
       const ps = sevensData.playerSevenStats[p];
       if (!ps) return;
-      const pc = PLAYER_COLORS[p];
+      const pc = getPlayerInfo(p);
       const limit = ps.discardLimit || 7;
       const isVulnerable = ps.currentCards > limit;
       const luck = ps.sevenLuck;
@@ -982,11 +1010,11 @@
     html += '<div style="font-size:10px;font-weight:600;margin:8px 0 4px;color:#666;">Recent Rolls</div>';
     html += '<div style="background:rgba(0,0,0,0.3);padding:8px;border-radius:4px;font-size:9px;max-height:100px;overflow-y:auto;font-family:monospace;">';
     getDiceRolls().slice(-12).reverse().forEach(roll => {
-      const pc = PLAYER_COLORS[roll.player];
-      html += `<div><span style="color:#555;">#${roll.turn}:</span> <span style="color:${pc?.hex || '#888'};">${pc?.name?.[0] || '?'}</span> ${roll.sum}`;
+      const pc = getPlayerInfo(roll.player);
+      html += `<div><span style="color:#555;">#${roll.turn}:</span> <span style="color:${pc.hex};">${pc.name[0]}</span> ${roll.sum}`;
       activePlayers.forEach(p => {
         const res = calcResourcesForRoll(p, roll.sum);
-        if (res.total > 0) html += ` <span style="color:${PLAYER_COLORS[p].hex};">${PLAYER_COLORS[p].name[0]}+${res.total}</span>`;
+        if (res.total > 0) html += ` <span style="color:${getPlayerInfo(p).hex};">${getPlayerInfo(p).name[0]}+${res.total}</span>`;
       });
       html += '</div>';
     });
