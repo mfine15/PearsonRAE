@@ -150,6 +150,32 @@
     return n === 0 ? 0 : (6 - Math.abs(n - 7)) / 36;
   }
 
+  // Get ordinal suffix (1st, 2nd, 3rd, etc.)
+  function ordinal(n) {
+    const s = ['th', 'st', 'nd', 'rd'];
+    const v = n % 100;
+    return n + (s[(v - 20) % 10] || s[v] || s[0]);
+  }
+
+  // Round to nice axis values
+  function niceNumber(range, round) {
+    const exponent = Math.floor(Math.log10(range));
+    const fraction = range / Math.pow(10, exponent);
+    let niceFraction;
+    if (round) {
+      if (fraction < 1.5) niceFraction = 1;
+      else if (fraction < 3) niceFraction = 2;
+      else if (fraction < 7) niceFraction = 5;
+      else niceFraction = 10;
+    } else {
+      if (fraction <= 1) niceFraction = 1;
+      else if (fraction <= 2) niceFraction = 2;
+      else if (fraction <= 5) niceFraction = 5;
+      else niceFraction = 10;
+    }
+    return niceFraction * Math.pow(10, exponent);
+  }
+
   function normalCDF(z) {
     const a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741;
     const a4 = -1.453152027, a5 = 1.061405429, p = 0.3275911;
@@ -618,11 +644,9 @@
       return '<div style="text-align:center;padding:30px;color:#666;">Waiting for game data...</div>';
     }
 
-    let html = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-      <span style="color:#666;font-size:11px;">${rolls.length} rolls</span>
-    </div>`;
+    let html = `<div style="color:#555;font-size:11px;margin-bottom:10px;">${rolls.length} rolls</div>`;
 
-    html += '<div style="display:flex;flex-direction:column;gap:10px;">';
+    html += '<div style="display:flex;flex-direction:column;gap:8px;">';
     stats.forEach(s => {
       const aboveExp = parseFloat(s.aboveExpected);
       const isPositive = aboveExp >= 0;
@@ -646,25 +670,23 @@
                         conf === 'low' ? 'Low confidence (5-14 rolls)' : 'Very low confidence (<5 rolls)';
 
       html += `
-        <div style="background:rgba(255,255,255,0.05);border-radius:8px;padding:12px;">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
-            <div>
+        <div style="background:rgba(255,255,255,0.05);border-radius:8px;padding:10px 12px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <div style="display:flex;align-items:baseline;gap:6px;">
               <span style="color:${s.colorHex};font-weight:600;font-size:13px;">${s.color}</span>
-              <span style="color:#555;font-size:10px;margin-left:6px;">${s.currentCards} cards</span>
+              <span style="color:#555;font-size:10px;">${s.currentCards} cards</span>
             </div>
             <div style="text-align:right;">
-              <div style="font-size:20px;font-weight:700;color:${isPositive ? '#2ecc71' : '#e74c3c'};line-height:1;">
+              <span style="font-size:18px;font-weight:700;color:${isPositive ? '#2ecc71' : '#e74c3c'};">
                 ${isPositive ? '+' : ''}${s.aboveExpected}
-              </div>
-              ${pct !== undefined ? `<div style="font-size:10px;color:${pctColor};margin-top:2px;" title="${confTitle}">
-                ${pct.toFixed(0)}th %ile <span style="font-size:8px;letter-spacing:-1px;color:#555;">${confDots}</span>
-              </div>` : ''}
+              </span>
             </div>
           </div>
-          <div style="display:flex;justify-content:space-between;font-size:11px;color:#888;">
-            <span>Got <span style="color:#fff;">${s.totalReceived}</span></span>
-            <span>Expected <span style="color:#aaa;">${s.totalExpected}</span></span>
-            <span style="color:#555;">${s.expectedPerTurn}/roll</span>
+          <div style="display:flex;justify-content:space-between;align-items:center;font-size:10px;color:#666;">
+            <span>Got <span style="color:#aaa;">${s.totalReceived}</span> · Exp <span style="color:#666;">${s.totalExpected}</span></span>
+            ${pct !== undefined ? `<span style="color:${pctColor};" title="${confTitle}">
+              ${ordinal(Math.round(pct))} %ile <span style="font-size:8px;letter-spacing:-1px;opacity:0.6;">${confDots}</span>
+            </span>` : ''}
           </div>
         </div>`;
     });
@@ -682,40 +704,53 @@
     const commodityTypes = isCK ? [6, 7, 8] : [];
     const allTypes = { ...RESOURCE_TYPES, ...COMMODITY_TYPES };
 
-    let html = '<div style="display:flex;flex-direction:column;gap:10px;">';
+    let html = '<div style="display:flex;flex-direction:column;gap:8px;">';
     stats.forEach(s => {
+      // Filter to only resources with production (expected > 0) or received > 0
+      const activeResources = resourceTypes.filter(t =>
+        (s.expectedByResource[t] || 0) > 0 || (s.byResource[t] || 0) > 0
+      );
+      const activeCommodities = commodityTypes.filter(t =>
+        (s.expectedByResource[t] || 0) > 0 || (s.byResource[t] || 0) > 0
+      );
+
       html += `<div style="background:rgba(255,255,255,0.05);border-radius:8px;padding:10px;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
           <span style="color:${s.colorHex};font-weight:600;font-size:12px;">${s.color}</span>
           <span style="color:#555;font-size:10px;">${s.totalReceived} total</span>
-        </div>
-        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:4px;">`;
-      resourceTypes.forEach(resType => {
-        const resInfo = allTypes[resType];
-        const got = s.byResource[resType] || 0;
-        const exp = s.expectedByResource[resType] || 0;
-        const diff = got - exp;
-        html += `
-          <div style="text-align:center;padding:6px 4px;background:rgba(0,0,0,0.2);border-radius:4px;">
-            <div style="font-size:14px;">${resInfo.emoji}</div>
-            <div style="font-size:13px;font-weight:600;color:#fff;">${got}</div>
-            <div style="font-size:9px;color:${diff >= 0 ? '#2ecc71' : '#e74c3c'};">${diff >= 0 ? '+' : ''}${diff.toFixed(1)}</div>
-          </div>`;
-      });
-      html += '</div>';
+        </div>`;
 
-      // Show commodities row for C&K
-      if (isCK) {
-        html += `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin-top:6px;">`;
-        commodityTypes.forEach(comType => {
+      if (activeResources.length === 0) {
+        html += '<div style="color:#555;font-size:10px;text-align:center;padding:8px;">No production yet</div>';
+      } else {
+        html += `<div style="display:grid;grid-template-columns:repeat(${Math.min(activeResources.length, 5)},1fr);gap:4px;">`;
+        activeResources.forEach(resType => {
+          const resInfo = allTypes[resType];
+          const got = s.byResource[resType] || 0;
+          const exp = s.expectedByResource[resType] || 0;
+          const diff = got - exp;
+          html += `
+            <div style="text-align:center;padding:6px 4px;background:rgba(0,0,0,0.2);border-radius:4px;">
+              <div style="font-size:13px;">${resInfo.emoji}</div>
+              <div style="font-size:12px;font-weight:600;color:#fff;">${got}</div>
+              <div style="font-size:9px;color:${diff >= 0 ? '#2ecc71' : '#e74c3c'};">${diff >= 0 ? '+' : ''}${diff.toFixed(1)}</div>
+            </div>`;
+        });
+        html += '</div>';
+      }
+
+      // Show commodities row for C&K (only if player has commodity production)
+      if (activeCommodities.length > 0) {
+        html += `<div style="display:grid;grid-template-columns:repeat(${activeCommodities.length},1fr);gap:4px;margin-top:6px;">`;
+        activeCommodities.forEach(comType => {
           const comInfo = allTypes[comType];
           const got = s.byResource[comType] || 0;
           const exp = s.expectedByResource[comType] || 0;
           const diff = got - exp;
           html += `
             <div style="text-align:center;padding:6px 4px;background:rgba(155,89,182,0.15);border-radius:4px;">
-              <div style="font-size:14px;">${comInfo.emoji}</div>
-              <div style="font-size:13px;font-weight:600;color:#fff;">${got}</div>
+              <div style="font-size:13px;">${comInfo.emoji}</div>
+              <div style="font-size:12px;font-weight:600;color:#fff;">${got}</div>
               <div style="font-size:9px;color:${diff >= 0 ? '#2ecc71' : '#e74c3c'};">${diff >= 0 ? '+' : ''}${diff.toFixed(1)}</div>
             </div>`;
         });
@@ -733,29 +768,39 @@
     const graphHeight = height - padding.top - padding.bottom;
 
     const maxTurns = Math.max(...stats.map(s => s.history.length), 1);
-    let minVal = 0, maxVal = 0;
-    stats.forEach(s => { s.history.forEach(h => { minVal = Math.min(minVal, h.aboveExpected); maxVal = Math.max(maxVal, h.aboveExpected); }); });
+    let dataMin = 0, dataMax = 0;
+    stats.forEach(s => { s.history.forEach(h => { dataMin = Math.min(dataMin, h.aboveExpected); dataMax = Math.max(dataMax, h.aboveExpected); }); });
 
-    const range = Math.max(maxVal - minVal, 2);
-    minVal -= range * 0.1; maxVal += range * 0.1;
-    const finalRange = maxVal - minVal;
+    // Calculate nice axis bounds
+    const dataRange = Math.max(dataMax - dataMin, 1);
+    const tickSpacing = niceNumber(dataRange / 4, true);
+    const niceMin = Math.floor(dataMin / tickSpacing) * tickSpacing;
+    const niceMax = Math.ceil(dataMax / tickSpacing) * tickSpacing;
+    const niceRange = niceMax - niceMin;
 
     const scaleX = (i) => padding.left + (i / (maxTurns - 1 || 1)) * graphWidth;
-    const scaleY = (v) => padding.top + graphHeight * ((maxVal - v) / finalRange);
+    const scaleY = (v) => padding.top + graphHeight * ((niceMax - v) / niceRange);
     const zeroY = scaleY(0);
 
     let svg = `<svg width="${width}" height="${height}" style="display:block;margin:0 auto;">`;
     svg += `<rect width="${width}" height="${height}" fill="#1a1a2e" rx="8"/>`;
 
-    for (let i = 0; i <= 5; i++) {
-      const y = padding.top + (graphHeight / 5) * i;
-      const val = maxVal - (finalRange / 5) * i;
-      svg += `<line x1="${padding.left}" y1="${y}" x2="${width - padding.right}" y2="${y}" stroke="rgba(255,255,255,0.1)" stroke-width="1"/>`;
-      svg += `<text x="${padding.left - 8}" y="${y + 4}" fill="#666" font-size="9" text-anchor="end">${val.toFixed(1)}</text>`;
+    // Draw gridlines at nice intervals
+    const numTicks = Math.round(niceRange / tickSpacing);
+    for (let i = 0; i <= numTicks; i++) {
+      const val = niceMax - i * tickSpacing;
+      const y = scaleY(val);
+      if (y >= padding.top && y <= height - padding.bottom) {
+        svg += `<line x1="${padding.left}" y1="${y}" x2="${width - padding.right}" y2="${y}" stroke="rgba(255,255,255,0.08)" stroke-width="1"/>`;
+        // Format label - show integer if whole number
+        const label = Number.isInteger(val) ? val.toString() : val.toFixed(1);
+        svg += `<text x="${padding.left - 6}" y="${y + 3}" fill="#555" font-size="9" text-anchor="end">${label}</text>`;
+      }
     }
 
-    if (minVal < 0 && maxVal > 0) {
-      svg += `<line x1="${padding.left}" y1="${zeroY}" x2="${width - padding.right}" y2="${zeroY}" stroke="rgba(255,255,255,0.3)" stroke-width="1.5" stroke-dasharray="4,4"/>`;
+    // Zero line (more prominent)
+    if (niceMin < 0 && niceMax > 0) {
+      svg += `<line x1="${padding.left}" y1="${zeroY}" x2="${width - padding.right}" y2="${zeroY}" stroke="rgba(255,255,255,0.25)" stroke-width="1" stroke-dasharray="3,3"/>`;
     }
 
     stats.forEach(s => {
@@ -818,8 +863,12 @@
       </div>`;
     }
 
-    // Per-player vulnerability stats
-    html += '<div style="display:flex;flex-direction:column;gap:8px;">';
+    // Per-player vulnerability stats - header
+    html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;padding:0 4px;">
+      <span style="font-size:10px;color:#555;">Player</span>
+      <span style="font-size:10px;color:#555;" title="7s hit while vulnerable minus expected">7s Luck</span>
+    </div>`;
+    html += '<div style="display:flex;flex-direction:column;gap:6px;">';
 
     activePlayers.forEach(p => {
       const ps = sevensData.playerSevenStats[p];
@@ -835,22 +884,22 @@
           <div style="display:flex;justify-content:space-between;align-items:center;">
             <div style="display:flex;align-items:center;gap:8px;">
               <span style="color:${pc.hex};font-weight:600;">${pc.name}</span>
-              <span style="font-size:12px;padding:3px 8px;border-radius:4px;background:${isVulnerable ? 'rgba(231,76,60,0.3)' : 'rgba(255,255,255,0.08)'};color:${isVulnerable ? '#e74c3c' : '#aaa'};font-weight:600;">
-                ${ps.currentCards}/${limit}${hasWallBonus ? '🏰' : ''}${isVulnerable ? ' ⚠️' : ''}
+              <span style="font-size:11px;padding:2px 6px;border-radius:4px;background:${isVulnerable ? 'rgba(231,76,60,0.3)' : 'rgba(255,255,255,0.08)'};color:${isVulnerable ? '#e74c3c' : '#888'};">
+                ${ps.currentCards}/${limit}${hasWallBonus ? ' 🏰' : ''}${isVulnerable ? ' ⚠️' : ''}
               </span>
             </div>
-            <span style="font-size:13px;font-weight:600;color:${luck < -0.1 ? '#2ecc71' : luck > 0.1 ? '#e74c3c' : '#666'};">
+            <span style="font-size:14px;font-weight:600;color:${luck < -0.1 ? '#2ecc71' : luck > 0.1 ? '#e74c3c' : '#666'};" title="${luck < 0 ? 'Lucky: fewer 7s hit than expected' : luck > 0 ? 'Unlucky: more 7s hit than expected' : 'Neutral'}">
               ${luck > 0 ? '+' : ''}${luck.toFixed(1)}
             </span>
           </div>
           ${ps.rollsWhileVulnerable > 0 ? `
-          <div style="margin-top:8px;display:flex;gap:16px;font-size:10px;color:#888;">
-            <div><span style="color:#fff;">${ps.rollsWhileVulnerable}</span> vulnerable rolls</div>
-            <div><span style="color:#fff;">${ps.sevensWhileVulnerable}</span>/${ps.expectedSevens.toFixed(1)} 7s hit</div>
-            ${ps.timesDiscarded > 0 ? `<div style="color:#e74c3c;">${ps.cardsDiscarded} discarded</div>` : ''}
+          <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:12px;font-size:10px;color:#666;">
+            <span><span style="color:#aaa;">${ps.rollsWhileVulnerable}</span> vulnerable</span>
+            <span><span style="color:#aaa;">${ps.sevensWhileVulnerable}</span>/${ps.expectedSevens.toFixed(1)} hit</span>
+            ${ps.timesDiscarded > 0 ? `<span style="color:#e74c3c;">${ps.cardsDiscarded} discarded</span>` : ''}
           </div>` : `
-          <div style="margin-top:6px;font-size:10px;color:#555;">
-            ${ps.timesDiscarded > 0 ? `<span style="color:#e74c3c;">${ps.timesDiscarded}× discarded (${ps.cardsDiscarded} cards)</span>` : 'No vulnerable rolls tracked'}
+          <div style="margin-top:4px;font-size:10px;color:#555;">
+            ${ps.timesDiscarded > 0 ? `<span style="color:#e74c3c;">${ps.timesDiscarded}× discarded (${ps.cardsDiscarded} cards)</span>` : 'No vulnerable rolls yet'}
           </div>`}
         </div>`;
     });
