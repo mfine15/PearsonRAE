@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "PearsonRAE",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "description": "Rolls Above Expectation tracker for Colonist.io",
   "permissions": ["storage"],
   "content_scripts": [

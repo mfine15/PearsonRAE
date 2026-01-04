@@ -73,6 +73,15 @@ Hexes blocked by the robber are excluded from both actual and expected resource 
 - Robber position is tracked at each roll for accurate historical calculations
 - Expected resources per turn reflects your current unblocked hexes
 
+### Time Decay Weighting (Optional)
+
+Use the "Early weight" slider to weight early rolls more heavily than recent ones:
+- **λ = 1.00 (Off)** - All rolls count equally (default)
+- **λ = 0.95-0.99** - Mild decay, recent rolls count slightly less
+- **λ = 0.90-0.94** - Stronger decay, emphasizes early game luck
+
+This uses exponential decay: roll i has weight λ^(i-1). At λ=0.95, roll 50 has about 8% the weight of roll 1.
+
 ## Console API
 
 Access raw data via browser console:
@@ -83,6 +92,8 @@ PearsonRAE.getSevens()    // 7s analysis
 PearsonRAE.toggle()       // Toggle collapsed state
 PearsonRAE.isCK()         // Check if Cities & Knights game
 PearsonRAE.getRobberHex() // Get robber hex index
+PearsonRAE.getDecay()     // Get current decay factor
+PearsonRAE.setDecay(0.95) // Set decay factor (0.9-1.0)
 ```
 
 ## Files

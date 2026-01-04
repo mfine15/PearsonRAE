@@ -11,9 +11,19 @@
   let currentView = 'main';
   let isCollapsed = false;
 
+  // Time decay factor for weighting early rolls more (1.0 = no decay, 0.95 = 5% decay per roll)
+  let decayFactor = 1.0;
+
   // Stateful tracking - snapshot card counts at each roll
   let rollHistory = []; // Array of { turn, diceSum, player, cardCounts: {1: n, 2: n, ...} }
   let lastKnownRollCount = 0;
+
+  // Calculate weight for a roll based on decay factor
+  // Roll 1 has weight 1, later rolls have weight λ^(i-1)
+  function getRollWeight(rollIndex, totalRolls) {
+    if (decayFactor >= 1.0) return 1;
+    return Math.pow(decayFactor, rollIndex);
+  }
 
   const RESOURCE_TYPES = {
     0: { name: 'Desert', color: '#d4a574', emoji: '🏜️' },
@@ -193,17 +203,23 @@
     }
 
     // Calculate actual resources and expected for each roll using historical robber position
+    // Apply decay weighting: early rolls count more when decay is enabled
     let totalActual = 0;
     let totalExpected = 0;
     let totalVariance = 0;
+    let totalWeight = 0;
 
     rolls.forEach((roll, i) => {
       // Get historical robber position from rollHistory if available
       const histRoll = rollHistory[i];
       const robberHex = (histRoll && histRoll.robberHex !== null) ? histRoll.robberHex : getRobberHexIndex();
 
-      // Calculate actual resources for this roll
-      totalActual += calcResourcesForRoll(playerColor, roll.sum, robberHex).total;
+      // Get weight for this roll (earlier rolls have higher weight when decay enabled)
+      const weight = getRollWeight(i, rolls.length);
+      totalWeight += weight;
+
+      // Calculate actual resources for this roll (weighted)
+      totalActual += weight * calcResourcesForRoll(playerColor, roll.sum, robberHex).total;
 
       // Calculate expected value and variance for this roll (considering robber position)
       let expectedThisRoll = 0, varianceThisRoll = 0;
@@ -218,8 +234,9 @@
           varianceThisRoll += p * (1 - p) * m * m;
         });
       });
-      totalExpected += expectedThisRoll;
-      totalVariance += varianceThisRoll;
+      // Apply weight to expected and weight^2 to variance (Var(aX) = a^2 * Var(X))
+      totalExpected += weight * expectedThisRoll;
+      totalVariance += weight * weight * varianceThisRoll;
     });
 
     if (totalVariance === 0) return { zScore: 0, percentile: 50, pValue: 1, confidence: 'none', nRolls: rolls.length };
@@ -229,12 +246,13 @@
     const percentile = normalCDF(zScore) * 100;
     const pValue = 2 * (1 - normalCDF(Math.abs(zScore)));
 
-    // Confidence level based on sample size - how much we can trust the percentile
-    // With few rolls, even extreme percentiles aren't very meaningful
+    // Confidence level based on effective sample size (sum of weights)
+    // With few rolls or heavy decay, even extreme percentiles aren't very meaningful
+    const effectiveRolls = decayFactor < 1 ? totalWeight : rolls.length;
     let confidence = 'low';
-    if (rolls.length >= 30) confidence = 'high';
-    else if (rolls.length >= 15) confidence = 'medium';
-    else if (rolls.length >= 5) confidence = 'low';
+    if (effectiveRolls >= 30) confidence = 'high';
+    else if (effectiveRolls >= 15) confidence = 'medium';
+    else if (effectiveRolls >= 5) confidence = 'low';
     else confidence = 'very_low';
 
     return {
@@ -245,7 +263,8 @@
       expected: totalExpected,
       stdDev,
       confidence,
-      nRolls: rolls.length
+      nRolls: rolls.length,
+      effectiveRolls: effectiveRolls.toFixed(1)
     };
   }
 
@@ -526,14 +545,17 @@
       const actualThisRoll = calcResourcesForRoll(playerColor, roll.sum, robberHex);
       const expectedThisRoll = calcExpectedByResource(playerColor, robberHex);
 
-      cumActual.total += actualThisRoll.total;
+      // Apply decay weight (earlier rolls have higher weight when decay enabled)
+      const weight = getRollWeight(i, rolls.length);
+
+      cumActual.total += weight * actualThisRoll.total;
       Object.keys(allTypes).forEach(t => {
         if (t !== '0') {
-          cumActual[t] += actualThisRoll[t] || 0;
-          cumExpected[t] += expectedThisRoll[t] || 0;
+          cumActual[t] += weight * (actualThisRoll[t] || 0);
+          cumExpected[t] += weight * (expectedThisRoll[t] || 0);
         }
       });
-      cumExpected.total += expectedThisRoll.total;
+      cumExpected.total += weight * expectedThisRoll.total;
       return {
         turn: i + 1, roll: roll.sum, rolledBy: roll.player,
         actualThisRoll: actualThisRoll.total, expectedThisRoll: expectedThisRoll.total,
@@ -609,11 +631,33 @@
       { id: 'sevens', label: '7s' },
       { id: 'debug', label: 'Debug' }
     ];
-    return '<div style="display:flex;gap:4px;margin-bottom:12px;flex-wrap:wrap;align-items:center;">' +
+
+    // Calculate half-life for display (rolls until weight = 0.5)
+    const halfLife = decayFactor < 1 ? Math.round(Math.log(0.5) / Math.log(decayFactor)) : null;
+    const decayLabel = decayFactor >= 1 ? 'Off' : `λ=${decayFactor.toFixed(2)}`;
+    const decayEnabled = decayFactor < 1;
+
+    let html = '<div style="display:flex;gap:4px;margin-bottom:8px;flex-wrap:wrap;align-items:center;">' +
       `<button onclick="window._pearsonRAEToggle()" style="padding:6px 8px;background:rgba(255,255,255,0.1);color:#888;border:none;border-radius:6px;cursor:pointer;font-size:12px;margin-right:4px;">◀</button>` +
       tabs.map(t => `<button onclick="window._rollsTrackerSetView('${t.id}')" style="padding:5px 10px;font-size:10px;cursor:pointer;background:${currentView === t.id ? 'linear-gradient(135deg,#667eea,#764ba2)' : 'rgba(255,255,255,0.1)'};color:#fff;border:none;border-radius:6px;font-weight:${currentView === t.id ? '600' : '400'};transition:all 0.2s;">${t.label}</button>`).join('') +
       '</div>';
+
+    // Decay slider row
+    html += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;padding:6px 8px;background:rgba(255,255,255,0.03);border-radius:6px;">
+      <span style="font-size:10px;color:#666;white-space:nowrap;" title="Weight early rolls more heavily (compounding effect)">Early weight:</span>
+      <input type="range" min="90" max="100" value="${Math.round(decayFactor * 100)}"
+        oninput="window._pearsonRAESetDecay(this.value/100)"
+        style="flex:1;height:4px;accent-color:#667eea;cursor:pointer;">
+      <span style="font-size:10px;color:${decayEnabled ? '#667eea' : '#555'};min-width:45px;text-align:right;">${decayLabel}</span>
+    </div>`;
+
+    return html;
   }
+
+  window._pearsonRAESetDecay = function(value) {
+    decayFactor = Math.max(0.9, Math.min(1.0, parseFloat(value)));
+    updateOverlay();
+  };
 
   function renderCollapsedView() {
     const stats = getAllPlayersStats();
@@ -998,7 +1042,20 @@
     log('PearsonRAE initialized successfully');
   }
 
-  window.PearsonRAE = { getStats: getAllPlayersStats, getRolls: getDiceRolls, getSevens: analyzeSevens, getDebugLog: () => debugLog, getDetailedStats: calcDetailedStats, refresh: init, toggle: toggleCollapse, isCK: isCitiesAndKnights, getRobberHex: getRobberHexIndex };
+  window.PearsonRAE = {
+    getStats: getAllPlayersStats,
+    getRolls: getDiceRolls,
+    getSevens: analyzeSevens,
+    getDebugLog: () => debugLog,
+    getDetailedStats: calcDetailedStats,
+    refresh: init,
+    toggle: toggleCollapse,
+    isCK: isCitiesAndKnights,
+    getRobberHex: getRobberHexIndex,
+    // Decay control (1.0 = no decay, 0.9-0.99 = weight early rolls more)
+    getDecay: () => decayFactor,
+    setDecay: (val) => { decayFactor = Math.max(0.9, Math.min(1.0, parseFloat(val))); updateOverlay(); return decayFactor; }
+  };
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => setTimeout(init, 2000));
   else setTimeout(init, 2000);
