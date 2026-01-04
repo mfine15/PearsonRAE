@@ -1185,6 +1185,21 @@
       console.log('gameUserStates:', s.gameUserStates);
       console.log('gameState.playerStates keys:', Object.keys(s.gameState?.playerStates || {}));
       return s;
+    },
+    // Debug: dump all log event types
+    dumpLogTypes: () => {
+      if (!gameStore) return 'No gameStore';
+      const log = gameStore.getState().gameState?.gameLogState || {};
+      const types = {};
+      Object.values(log).forEach(e => {
+        const t = e.text?.type;
+        if (t !== undefined) {
+          if (!types[t]) types[t] = [];
+          if (types[t].length < 3) types[t].push(e); // Keep 3 examples
+        }
+      });
+      console.log('Log event types:', types);
+      return types;
     }
   };
 
