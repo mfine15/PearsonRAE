@@ -65,38 +65,13 @@
 
     try {
       const state = gameStore.getState();
-      const gs = state.gameState;
 
-      // Search multiple possible locations for players
-      const possibleArrays = [
-        gs?.players,
-        state?.players,
-        state?.game?.players,
-        gs?.game?.players,
-        state?.playersState,
-        gs?.playersState
-      ];
-
-      for (const players of possibleArrays) {
-        if (!Array.isArray(players)) continue;
-        const player = players.find(p => p && (p.color === playerId || p.playerColor === playerId || p.id === playerId));
-        if (player) {
-          const info = {
-            name: player.username || player.name || player.displayName || `P${playerId}`,
-            hex: player.selectedColor || player.color_hex || FALLBACK_COLORS[playerId] || '#888',
-            id: playerId
-          };
-          playerInfoCache[playerId] = info;
-          return info;
-        }
-      }
-
-      // Try playerUserStates which maps color to user info
-      const playerUserStates = gs?.playerUserStates;
-      if (playerUserStates && playerUserStates[playerId]) {
-        const pus = playerUserStates[playerId];
+      // gameUserStates maps player color to user info
+      const gus = state.gameUserStates;
+      if (gus && gus[playerId]) {
+        const user = gus[playerId];
         const info = {
-          name: pus.username || pus.name || `P${playerId}`,
+          name: user.username || user.name || `P${playerId}`,
           hex: FALLBACK_COLORS[playerId] || '#888',
           id: playerId
         };
@@ -1204,10 +1179,7 @@
       if (!gameStore) return 'No gameStore';
       const s = gameStore.getState();
       console.log('Full state keys:', Object.keys(s));
-      console.log('gameState keys:', Object.keys(s.gameState || {}));
-      console.log('players:', s.players);
-      console.log('gameState.players:', s.gameState?.players);
-      console.log('gameState.playerUserStates:', s.gameState?.playerUserStates);
+      console.log('gameUserStates:', s.gameUserStates);
       console.log('gameState.playerStates keys:', Object.keys(s.gameState?.playerStates || {}));
       return s;
     }
