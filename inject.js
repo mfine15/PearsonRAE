@@ -65,20 +65,20 @@
 
     try {
       const state = gameStore.getState();
+      const userStates = state.gameUserStates?.userStates;
 
-      // gameUserStates maps player color to user info
-      const gus = state.gameUserStates;
-      if (gus && gus[playerId]) {
-        const user = gus[playerId];
-        const info = {
-          name: user.username || user.name || `P${playerId}`,
-          hex: FALLBACK_COLORS[playerId] || '#888',
-          id: playerId
-        };
-        playerInfoCache[playerId] = info;
-        return info;
+      if (Array.isArray(userStates)) {
+        const user = userStates.find(u => u.selectedColor === playerId);
+        if (user) {
+          const info = {
+            name: user.username || `P${playerId}`,
+            hex: FALLBACK_COLORS[playerId] || '#888',
+            id: playerId
+          };
+          playerInfoCache[playerId] = info;
+          return info;
+        }
       }
-
     } catch (e) {
       console.error('PearsonRAE: Error getting player info', e);
     }
