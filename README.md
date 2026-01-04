@@ -6,6 +6,8 @@ A Chrome extension that tracks your luck in Catan by calculating how many resour
 
 Supports both **Base Catan** and **Cities & Knights** expansion.
 
+![PearsonRAE Screenshot](screenshots/resized/screenshot-2.png)
+
 ## Features
 
 - **RAE Tracking** - Shows cumulative resources received vs expected for each player
@@ -18,11 +20,22 @@ Supports both **Base Catan** and **Cities & Knights** expansion.
 
 ## Installation
 
-1. Clone this repository or download the files
-2. Open Chrome and go to `chrome://extensions`
-3. Enable "Developer mode" (toggle in top right)
-4. Click "Load unpacked" and select this folder
-5. Go to [colonist.io](https://colonist.io) and join a game
+### Option 1: Download Release (Recommended)
+
+1. Download the latest `.zip` from [Releases](https://github.com/mfine15/PearsonRAE/releases)
+2. Extract the zip to a folder
+3. Open Chrome and go to `chrome://extensions`
+4. Enable **Developer mode** (toggle in top right)
+5. Click **Load unpacked** and select the extracted folder
+6. Go to [colonist.io](https://colonist.io) and join a game
+
+### Option 2: Clone Repository
+
+```bash
+git clone https://github.com/mfine15/PearsonRAE.git
+```
+
+Then follow steps 3-6 above, selecting the cloned folder.
 
 ## Usage
 
