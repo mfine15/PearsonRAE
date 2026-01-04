@@ -118,10 +118,9 @@
 
     // Check if new rolls have occurred
     if (rolls.length > lastKnownRollCount) {
-      // Get current card counts BEFORE they change from this roll's distribution
-      // Note: This captures state right when we detect the roll, which should be
-      // after the roll but before resources are distributed (or right after)
+      // Get current state snapshots
       const currentCounts = getAllCardCounts();
+      const currentRobberHex = getRobberHexIndex();
 
       // Add any new rolls to history
       for (let i = lastKnownRollCount; i < rolls.length; i++) {
@@ -130,10 +129,11 @@
           turn: roll.turn,
           diceSum: roll.sum,
           player: roll.player,
-          // Snapshot card counts at this roll
+          // Snapshot state at this roll
           // For the most recent roll, use current state
           // For older rolls we missed, we don't have accurate data
-          cardCounts: i === rolls.length - 1 ? { ...currentCounts } : null
+          cardCounts: i === rolls.length - 1 ? { ...currentCounts } : null,
+          robberHex: i === rolls.length - 1 ? currentRobberHex : null
         });
       }
       lastKnownRollCount = rolls.length;
@@ -166,29 +166,40 @@
       return { zScore: 0, percentile: 50, pValue: 1, confidence: 'none', nRolls: rolls.length };
     }
 
-    // Calculate expected value and variance per roll
-    let expectedPerRoll = 0, variancePerRoll = 0;
-    buildings.forEach(b => {
-      b.hexes.forEach(hex => {
-        const p = hex.probability, m = b.multiplier;
-        expectedPerRoll += p * m;
-        // Var(X) = E[X^2] - E[X]^2 = p*m^2 - (p*m)^2 = p*m^2*(1-p)
-        variancePerRoll += p * (1 - p) * m * m;
+    // Calculate actual resources and expected for each roll using historical robber position
+    let totalActual = 0;
+    let totalExpected = 0;
+    let totalVariance = 0;
+
+    rolls.forEach((roll, i) => {
+      // Get historical robber position from rollHistory if available
+      const histRoll = rollHistory[i];
+      const robberHex = (histRoll && histRoll.robberHex !== null) ? histRoll.robberHex : getRobberHexIndex();
+
+      // Calculate actual resources for this roll
+      totalActual += calcResourcesForRoll(playerColor, roll.sum, robberHex).total;
+
+      // Calculate expected value and variance for this roll (considering robber position)
+      let expectedThisRoll = 0, varianceThisRoll = 0;
+      buildings.forEach(b => {
+        b.hexes.forEach(hex => {
+          // Skip hexes blocked by robber at this roll
+          if (robberHex !== null && hex.hexIndex === robberHex) return;
+
+          const p = hex.probability, m = b.multiplier;
+          expectedThisRoll += p * m;
+          // Var(X) = E[X^2] - E[X]^2 = p*m^2 - (p*m)^2 = p*m^2*(1-p)
+          varianceThisRoll += p * (1 - p) * m * m;
+        });
       });
+      totalExpected += expectedThisRoll;
+      totalVariance += varianceThisRoll;
     });
 
-    if (variancePerRoll === 0) return { zScore: 0, percentile: 50, pValue: 1, confidence: 'none', nRolls: rolls.length };
+    if (totalVariance === 0) return { zScore: 0, percentile: 50, pValue: 1, confidence: 'none', nRolls: rolls.length };
 
-    // Calculate actual resources received
-    let actual = 0;
-    rolls.forEach(roll => { actual += calcResourcesForRoll(playerColor, roll.sum).total; });
-
-    const totalExpected = expectedPerRoll * rolls.length;
-    // Variance scales linearly with n (independent rolls), stdDev scales with sqrt(n)
-    const totalVariance = variancePerRoll * rolls.length;
     const stdDev = Math.sqrt(totalVariance);
-
-    const zScore = (actual - totalExpected) / stdDev;
+    const zScore = (totalActual - totalExpected) / stdDev;
     const percentile = normalCDF(zScore) * 100;
     const pValue = 2 * (1 - normalCDF(Math.abs(zScore)));
 
@@ -204,7 +215,7 @@
       zScore,
       percentile,
       pValue,
-      actual,
+      actual: totalActual,
       expected: totalExpected,
       stdDev,
       confidence,
@@ -268,7 +279,9 @@
     return buildings;
   }
 
-  function calcExpectedByResource(playerColor) {
+  // Calculate expected resources per roll. If robberHexOverride is provided, use that instead of current robber position.
+  // Pass null to ignore robber entirely, undefined to use current position.
+  function calcExpectedByResource(playerColor, robberHexOverride) {
     const buildings = getPlayerBuildings(playerColor);
     const isCK = isCitiesAndKnights();
     const expected = { total: 0 };
@@ -279,11 +292,14 @@
       Object.keys(COMMODITY_TYPES).forEach(t => { expected[t] = 0; });
     }
 
+    // Determine which robber position to use
+    const robberHex = robberHexOverride !== undefined ? robberHexOverride : getRobberHexIndex();
+
     buildings.forEach(b => {
       const isCity = b.type === 'City';
       b.hexes.forEach(hex => {
-        // Skip hexes blocked by robber - being blocked isn't dice luck
-        if (isHexBlocked(hex.hexIndex)) return;
+        // Skip hexes blocked by robber (if robberHex is not null)
+        if (robberHex !== null && hex.hexIndex === robberHex) return;
 
         const prob = hex.probability;
         const resType = hex.type;
@@ -325,7 +341,9 @@
     return rolls.map((r, i) => ({ ...r, turn: i + 1 }));
   }
 
-  function calcResourcesForRoll(playerColor, diceSum) {
+  // Calculate resources for a roll. If robberHexOverride is provided, use that instead of current robber position.
+  // Pass null to ignore robber entirely, undefined to use current position.
+  function calcResourcesForRoll(playerColor, diceSum, robberHexOverride) {
     if (!gameStore) return { total: 0 };
     const gs = gameStore.getState().gameState;
     const corners = gs.mapState.tileCornerStates;
@@ -339,12 +357,15 @@
       Object.keys(COMMODITY_TYPES).forEach(t => { resources[t] = 0; });
     }
 
+    // Determine which robber position to use
+    const robberHex = robberHexOverride !== undefined ? robberHexOverride : getRobberHexIndex();
+
     Object.values(corners).forEach(corner => {
       if (corner.owner !== playerColor) return;
       const isCity = corner.buildingType === 2;
       getAdjacentHexes(corner, hexes).forEach(hex => {
-        // Skip hexes blocked by robber
-        if (isHexBlocked(hex.hexIndex)) return;
+        // Skip hexes blocked by robber (if robberHex is not null)
+        if (robberHex !== null && hex.hexIndex === robberHex) return;
 
         if (hex.diceNumber === diceSum) {
           const resType = hex.type;
@@ -459,7 +480,6 @@
 
   function calcDetailedStats(playerColor) {
     const rolls = getDiceRolls();
-    const expectedPerTurn = calcExpectedByResource(playerColor);
     const isCK = isCitiesAndKnights();
     let cumActual = { total: 0 }, cumExpected = { total: 0 };
     // Initialize resources
@@ -472,22 +492,32 @@
     const allTypes = isCK ? { ...RESOURCE_TYPES, ...COMMODITY_TYPES } : RESOURCE_TYPES;
 
     const history = rolls.map((roll, i) => {
-      const actualThisRoll = calcResourcesForRoll(playerColor, roll.sum);
+      // Get historical robber position from rollHistory if available
+      const histRoll = rollHistory[i];
+      // Use historical robber if we have it, otherwise fall back to current
+      const robberHex = (histRoll && histRoll.robberHex !== null) ? histRoll.robberHex : getRobberHexIndex();
+
+      const actualThisRoll = calcResourcesForRoll(playerColor, roll.sum, robberHex);
+      const expectedThisRoll = calcExpectedByResource(playerColor, robberHex);
+
       cumActual.total += actualThisRoll.total;
       Object.keys(allTypes).forEach(t => {
         if (t !== '0') {
           cumActual[t] += actualThisRoll[t] || 0;
-          cumExpected[t] += expectedPerTurn[t] || 0;
+          cumExpected[t] += expectedThisRoll[t] || 0;
         }
       });
-      cumExpected.total += expectedPerTurn.total;
+      cumExpected.total += expectedThisRoll.total;
       return {
         turn: i + 1, roll: roll.sum, rolledBy: roll.player,
-        actualThisRoll: actualThisRoll.total, expectedThisRoll: expectedPerTurn.total,
+        actualThisRoll: actualThisRoll.total, expectedThisRoll: expectedThisRoll.total,
         cumActual: cumActual.total, cumExpected: cumExpected.total,
         aboveExpected: cumActual.total - cumExpected.total
       };
     });
+
+    // Current expected per turn uses current robber position (for display)
+    const expectedPerTurn = calcExpectedByResource(playerColor);
     return { history, cumActual: { ...cumActual }, cumExpected: { ...cumExpected }, expectedPerTurn, buildings: getPlayerBuildings(playerColor) };
   }
 

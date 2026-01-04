@@ -70,8 +70,8 @@ The extension auto-detects C&K games and adjusts calculations:
 
 Hexes blocked by the robber are excluded from both actual and expected resource calculations:
 - Being blocked doesn't count as "unlucky" - it's a game mechanic, not dice luck
+- Robber position is tracked at each roll for accurate historical calculations
 - Expected resources per turn reflects your current unblocked hexes
-- Note: Historical RAE uses current robber position as an approximation
 
 ## Console API
 
