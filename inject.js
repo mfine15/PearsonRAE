@@ -662,27 +662,29 @@
       { id: 'graph', label: 'Graph' },
       { id: 'dice', label: 'Dice' },
       { id: 'sevens', label: '7s' },
-      { id: 'debug', label: 'Debug' }
+      { id: 'debug', label: '⚙' }
     ];
 
     // Calculate half-life for display (rolls until weight = 0.5)
-    const halfLife = decayFactor < 1 ? Math.round(Math.log(0.5) / Math.log(decayFactor)) : null;
     const decayLabel = decayFactor >= 1 ? 'Off' : `λ=${decayFactor.toFixed(2)}`;
     const decayEnabled = decayFactor < 1;
 
-    let html = '<div style="display:flex;gap:4px;margin-bottom:8px;flex-wrap:wrap;align-items:center;">' +
-      `<button onclick="window._pearsonRAEToggle()" style="padding:6px 8px;background:rgba(255,255,255,0.1);color:#888;border:none;border-radius:6px;cursor:pointer;font-size:12px;margin-right:4px;">◀</button>` +
-      tabs.map(t => `<button onclick="window._rollsTrackerSetView('${t.id}')" style="padding:5px 10px;font-size:10px;cursor:pointer;background:${currentView === t.id ? 'linear-gradient(135deg,#667eea,#764ba2)' : 'rgba(255,255,255,0.1)'};color:#fff;border:none;border-radius:6px;font-weight:${currentView === t.id ? '600' : '400'};transition:all 0.2s;">${t.label}</button>`).join('') +
+    let html = '<div style="display:flex;gap:3px;margin-bottom:8px;align-items:center;">' +
+      `<button onclick="window._pearsonRAEToggle()" style="padding:5px 7px;background:rgba(255,255,255,0.1);color:#888;border:none;border-radius:6px;cursor:pointer;font-size:11px;">◀</button>` +
+      tabs.map(t => `<button onclick="window._rollsTrackerSetView('${t.id}')" style="padding:4px 8px;font-size:10px;cursor:pointer;background:${currentView === t.id ? 'linear-gradient(135deg,#667eea,#764ba2)' : 'rgba(255,255,255,0.1)'};color:#fff;border:none;border-radius:6px;font-weight:${currentView === t.id ? '600' : '400'};transition:all 0.2s;">${t.label}</button>`).join('') +
       '</div>';
 
-    // Decay slider row
-    html += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;padding:6px 8px;background:rgba(255,255,255,0.03);border-radius:6px;">
-      <span style="font-size:10px;color:#666;white-space:nowrap;" title="Weight early rolls more heavily (compounding effect)">Early weight:</span>
-      <input type="range" min="90" max="100" value="${Math.round(decayFactor * 100)}"
-        oninput="window._pearsonRAESetDecay(this.value/100)"
-        style="flex:1;height:4px;accent-color:#667eea;cursor:pointer;">
-      <span style="font-size:10px;color:${decayEnabled ? '#667eea' : '#555'};min-width:45px;text-align:right;">${decayLabel}</span>
-    </div>`;
+    // Only show decay slider on views that use it (Main, Res, Graph)
+    const showDecay = ['main', 'resources', 'graph'].includes(currentView);
+    if (showDecay) {
+      html += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;padding:6px 8px;background:rgba(255,255,255,0.03);border-radius:6px;">
+        <span style="font-size:10px;color:#666;white-space:nowrap;" title="Weight early rolls more heavily">Early weight:</span>
+        <input type="range" min="90" max="100" value="${Math.round(decayFactor * 100)}"
+          oninput="window._pearsonRAESetDecay(this.value/100)"
+          style="flex:1;height:4px;accent-color:#667eea;cursor:pointer;">
+        <span style="font-size:10px;color:${decayEnabled ? '#667eea' : '#555'};min-width:45px;text-align:right;">${decayLabel}</span>
+      </div>`;
+    }
 
     return html;
   }
