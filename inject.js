@@ -60,26 +60,55 @@
   function getPlayerInfo(playerId) {
     if (playerInfoCache[playerId]) return playerInfoCache[playerId];
 
-    if (!gameStore) return { name: `P${playerId}`, hex: FALLBACK_COLORS[playerId] || '#888' };
+    const fallback = { name: `P${playerId}`, hex: FALLBACK_COLORS[playerId] || '#888', id: playerId };
+    if (!gameStore) return fallback;
 
-    const state = gameStore.getState();
-    const gs = state.gameState;
+    try {
+      const state = gameStore.getState();
+      const gs = state.gameState;
 
-    // Try to get from players array
-    const players = gs.players || state.players || [];
-    const player = players.find(p => p && p.color === playerId);
+      // Search multiple possible locations for players
+      const possibleArrays = [
+        gs?.players,
+        state?.players,
+        state?.game?.players,
+        gs?.game?.players,
+        state?.playersState,
+        gs?.playersState
+      ];
 
-    if (player) {
-      const info = {
-        name: player.username || player.name || `P${playerId}`,
-        hex: player.selectedColor || FALLBACK_COLORS[playerId] || '#888'
-      };
-      playerInfoCache[playerId] = info;
-      return info;
+      for (const players of possibleArrays) {
+        if (!Array.isArray(players)) continue;
+        const player = players.find(p => p && (p.color === playerId || p.playerColor === playerId || p.id === playerId));
+        if (player) {
+          const info = {
+            name: player.username || player.name || player.displayName || `P${playerId}`,
+            hex: player.selectedColor || player.color_hex || FALLBACK_COLORS[playerId] || '#888',
+            id: playerId
+          };
+          playerInfoCache[playerId] = info;
+          return info;
+        }
+      }
+
+      // Try playerUserStates which maps color to user info
+      const playerUserStates = gs?.playerUserStates;
+      if (playerUserStates && playerUserStates[playerId]) {
+        const pus = playerUserStates[playerId];
+        const info = {
+          name: pus.username || pus.name || `P${playerId}`,
+          hex: FALLBACK_COLORS[playerId] || '#888',
+          id: playerId
+        };
+        playerInfoCache[playerId] = info;
+        return info;
+      }
+
+    } catch (e) {
+      console.error('PearsonRAE: Error getting player info', e);
     }
 
-    // Fallback
-    return { name: `P${playerId}`, hex: FALLBACK_COLORS[playerId] || '#888' };
+    return fallback;
   }
 
   // Get active players from playerStates
@@ -656,6 +685,7 @@
       { id: 'main', label: 'Main' },
       { id: 'resources', label: 'Res' },
       { id: 'graph', label: 'Graph' },
+      { id: 'dice', label: 'Dice' },
       { id: 'sevens', label: '7s' },
       { id: 'debug', label: 'Debug' }
     ];
@@ -891,19 +921,104 @@
     });
     svg += '</svg>';
 
-    let legend = '<div style="display:flex;justify-content:center;gap:12px;margin-top:10px;">';
+    let legend = '<div style="display:flex;justify-content:center;gap:12px;margin-top:10px;flex-wrap:wrap;">';
     stats.forEach(s => {
       const last = s.history[s.history.length - 1];
       const val = last ? last.aboveExpected.toFixed(1) : '0';
       const isPos = parseFloat(val) >= 0;
       legend += `<div style="display:flex;align-items:center;gap:4px;">
         <div style="width:10px;height:10px;background:${s.colorHex};border-radius:2px;"></div>
+        <span style="font-size:9px;color:#888;">${s.color}</span>
         <span style="font-size:10px;color:${isPos ? '#2ecc71' : '#e74c3c'};">${isPos ? '+' : ''}${val}</span>
       </div>`;
     });
     legend += '</div>';
 
     return `<div style="text-align:center;margin-bottom:8px;color:#666;font-size:10px;">Luck over time (rolls above/below expected)</div>${svg}${legend}`;
+  }
+
+  function renderDiceView(rolls) {
+    // Count occurrences of each dice sum (2-12)
+    const counts = {};
+    for (let i = 2; i <= 12; i++) counts[i] = 0;
+    rolls.forEach(r => { if (r.sum >= 2 && r.sum <= 12) counts[r.sum]++; });
+
+    const totalRolls = rolls.length;
+    const maxCount = Math.max(...Object.values(counts), 1);
+
+    // Expected probabilities for 2d6
+    const expected = { 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 5, 9: 4, 10: 3, 11: 2, 12: 1 };
+    const totalWays = 36;
+
+    // SVG histogram
+    const width = 260, height = 140, barWidth = 20, gap = 3;
+    const startX = 15, startY = height - 25;
+    const maxBarHeight = height - 45;
+
+    let svg = `<svg width="${width}" height="${height}" style="display:block;margin:0 auto;">`;
+
+    // Y-axis label
+    svg += `<text x="5" y="15" font-size="8" fill="#666">Count</text>`;
+
+    // Draw bars
+    for (let i = 2; i <= 12; i++) {
+      const x = startX + (i - 2) * (barWidth + gap);
+      const count = counts[i];
+      const barHeight = maxCount > 0 ? (count / maxCount) * maxBarHeight : 0;
+      const expectedCount = (expected[i] / totalWays) * totalRolls;
+      const expectedHeight = maxCount > 0 ? (expectedCount / maxCount) * maxBarHeight : 0;
+
+      // Expected bar (outline)
+      if (totalRolls > 0) {
+        svg += `<rect x="${x}" y="${startY - expectedHeight}" width="${barWidth}" height="${expectedHeight}" fill="none" stroke="rgba(102,126,234,0.5)" stroke-width="1" stroke-dasharray="2,2"/>`;
+      }
+
+      // Actual bar
+      const color = count > expectedCount ? '#2ecc71' : count < expectedCount ? '#e74c3c' : '#667eea';
+      svg += `<rect x="${x}" y="${startY - barHeight}" width="${barWidth}" height="${barHeight}" fill="${color}" rx="2"/>`;
+
+      // Count label on top of bar
+      if (count > 0) {
+        svg += `<text x="${x + barWidth/2}" y="${startY - barHeight - 3}" text-anchor="middle" font-size="8" fill="#fff">${count}</text>`;
+      }
+
+      // X-axis label (dice sum)
+      svg += `<text x="${x + barWidth/2}" y="${startY + 12}" text-anchor="middle" font-size="9" fill="#888">${i}</text>`;
+    }
+
+    // X-axis line
+    svg += `<line x1="${startX}" y1="${startY}" x2="${startX + 11 * (barWidth + gap)}" y2="${startY}" stroke="#444" stroke-width="1"/>`;
+
+    svg += '</svg>';
+
+    // Stats summary
+    const avg = totalRolls > 0 ? (rolls.reduce((sum, r) => sum + r.sum, 0) / totalRolls).toFixed(2) : '0';
+    const sevens = counts[7];
+    const expectedSevens = (totalRolls * 6 / 36).toFixed(1);
+
+    let html = `
+      <div style="text-align:center;margin-bottom:8px;color:#666;font-size:10px;">Dice Roll Distribution (${totalRolls} rolls)</div>
+      ${svg}
+      <div style="display:flex;justify-content:space-around;margin-top:12px;font-size:10px;">
+        <div style="text-align:center;">
+          <div style="color:#888;">Average</div>
+          <div style="font-size:16px;font-weight:600;color:#fff;">${avg}</div>
+          <div style="color:#555;font-size:9px;">expected: 7.00</div>
+        </div>
+        <div style="text-align:center;">
+          <div style="color:#888;">7s Rolled</div>
+          <div style="font-size:16px;font-weight:600;color:#fff;">${sevens}</div>
+          <div style="color:#555;font-size:9px;">expected: ${expectedSevens}</div>
+        </div>
+      </div>
+      <div style="margin-top:10px;padding:8px;background:rgba(255,255,255,0.03);border-radius:6px;font-size:9px;color:#666;">
+        <span style="color:#2ecc71;">■</span> Above expected &nbsp;
+        <span style="color:#e74c3c;">■</span> Below expected &nbsp;
+        <span style="border:1px dashed rgba(102,126,234,0.5);padding:0 4px;">---</span> Expected
+      </div>
+    `;
+
+    return html;
   }
 
   function renderSevensView() {
@@ -1039,6 +1154,7 @@
       case 'main': html += renderMainView(stats, rolls); break;
       case 'resources': html += renderResourcesView(stats); break;
       case 'graph': html += renderGraphView(stats); break;
+      case 'dice': html += renderDiceView(rolls); break;
       case 'sevens': html += renderSevensView(); break;
       case 'debug': html += renderDebugView(stats); break;
     }
@@ -1082,7 +1198,19 @@
     getRobberHex: getRobberHexIndex,
     // Decay control (1.0 = no decay, 0.9-0.99 = weight early rolls more)
     getDecay: () => decayFactor,
-    setDecay: (val) => { decayFactor = Math.max(0.9, Math.min(1.0, parseFloat(val))); updateOverlay(); return decayFactor; }
+    setDecay: (val) => { decayFactor = Math.max(0.9, Math.min(1.0, parseFloat(val))); updateOverlay(); return decayFactor; },
+    // Debug: dump state to find player names
+    dumpState: () => {
+      if (!gameStore) return 'No gameStore';
+      const s = gameStore.getState();
+      console.log('Full state keys:', Object.keys(s));
+      console.log('gameState keys:', Object.keys(s.gameState || {}));
+      console.log('players:', s.players);
+      console.log('gameState.players:', s.gameState?.players);
+      console.log('gameState.playerUserStates:', s.gameState?.playerUserStates);
+      console.log('gameState.playerStates keys:', Object.keys(s.gameState?.playerStates || {}));
+      return s;
+    }
   };
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => setTimeout(init, 2000));
