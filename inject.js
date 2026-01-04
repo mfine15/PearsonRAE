@@ -674,8 +674,8 @@
       tabs.map(t => `<button onclick="window._rollsTrackerSetView('${t.id}')" style="padding:4px 8px;font-size:10px;cursor:pointer;background:${currentView === t.id ? 'linear-gradient(135deg,#667eea,#764ba2)' : 'rgba(255,255,255,0.1)'};color:#fff;border:none;border-radius:6px;font-weight:${currentView === t.id ? '600' : '400'};transition:all 0.2s;">${t.label}</button>`).join('') +
       '</div>';
 
-    // Only show decay slider on views that use it (Main, Res, Graph)
-    const showDecay = ['main', 'resources', 'graph'].includes(currentView);
+    // Only show decay slider on views that use it (Main, Graph)
+    const showDecay = ['main', 'graph'].includes(currentView);
     if (showDecay) {
       html += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;padding:6px 8px;background:rgba(255,255,255,0.03);border-radius:6px;">
         <span style="font-size:10px;color:#666;white-space:nowrap;" title="Weight early rolls more heavily">Early weight:</span>
@@ -793,10 +793,11 @@
         (s.expectedByResource[t] || 0) > 0 || (s.byResource[t] || 0) > 0
       );
 
+      const total = typeof s.totalReceived === 'number' ? s.totalReceived.toFixed(1) : s.totalReceived;
       html += `<div style="background:rgba(255,255,255,0.05);border-radius:8px;padding:10px;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
           <span style="color:${s.colorHex};font-weight:600;font-size:12px;">${s.color}</span>
-          <span style="color:#555;font-size:10px;">${s.totalReceived} total</span>
+          <span style="color:#555;font-size:10px;">${total} total</span>
         </div>`;
 
       if (activeResources.length === 0) {
@@ -811,7 +812,7 @@
           html += `
             <div style="text-align:center;padding:6px 4px;background:rgba(0,0,0,0.2);border-radius:4px;">
               <div style="font-size:13px;">${resInfo.emoji}</div>
-              <div style="font-size:12px;font-weight:600;color:#fff;">${got}</div>
+              <div style="font-size:12px;font-weight:600;color:#fff;">${got.toFixed(1)}</div>
               <div style="font-size:9px;color:${diff >= 0 ? '#2ecc71' : '#e74c3c'};">${diff >= 0 ? '+' : ''}${diff.toFixed(1)}</div>
             </div>`;
         });
@@ -829,7 +830,7 @@
           html += `
             <div style="text-align:center;padding:6px 4px;background:rgba(155,89,182,0.15);border-radius:4px;">
               <div style="font-size:13px;">${comInfo.emoji}</div>
-              <div style="font-size:12px;font-weight:600;color:#fff;">${got}</div>
+              <div style="font-size:12px;font-weight:600;color:#fff;">${got.toFixed(1)}</div>
               <div style="font-size:9px;color:${diff >= 0 ? '#2ecc71' : '#e74c3c'};">${diff >= 0 ? '+' : ''}${diff.toFixed(1)}</div>
             </div>`;
         });
