@@ -53,6 +53,521 @@
     0: '#e74c3c', 1: '#3498db', 2: '#e67e22', 3: '#ecf0f1', 4: '#27ae60', 5: '#8b4513'
   };
 
+  // ============================================================================
+  // Card Tracker - Probabilistic hand inference for opponents
+  // ============================================================================
+
+  const CARD_RESOURCES = ['wood', 'brick', 'sheep', 'wheat', 'ore'];
+  const CARD_COMMODITIES = ['cloth', 'coin', 'paper'];
+  const ALL_CARD_TYPES = [...CARD_RESOURCES, ...CARD_COMMODITIES];
+  const CARD_INDEX = { wood: 0, brick: 1, sheep: 2, wheat: 3, ore: 4, cloth: 5, coin: 6, paper: 7 };
+  const CARD_EMOJI = { wood: '🪵', brick: '🧱', sheep: '🐑', wheat: '🌾', ore: '🪨', cloth: '🧶', coin: '🪙', paper: '📜' };
+
+  // Card type enum from game state
+  const CARD_TYPE_MAP = { 0: 'wood', 1: 'brick', 2: 'sheep', 3: 'wheat', 4: 'ore', 5: 'cloth', 6: 'coin', 7: 'paper' };
+
+  const BUILDING_COSTS = {
+    road: { wood: 1, brick: 1 },
+    settlement: { wood: 1, brick: 1, sheep: 1, wheat: 1 },
+    city: { wheat: 2, ore: 3 },
+    devCard: { sheep: 1, wheat: 1, ore: 1 },
+    cityWall: { brick: 2 },
+    knight: { sheep: 1, ore: 1 },
+    strongKnight: { sheep: 1, ore: 1 },
+    mightyKnight: { sheep: 1, ore: 1 }
+  };
+
+  class Hand {
+    constructor(cards = null, isCK = false) {
+      this.isCK = isCK;
+      const size = isCK ? 8 : 5;
+      this.cards = cards ? [...cards] : new Array(size).fill(0);
+      while (this.cards.length < size) this.cards.push(0);
+    }
+    get(cardType) {
+      const idx = CARD_INDEX[cardType];
+      if (idx === undefined || idx >= this.cards.length) return 0;
+      return this.cards[idx];
+    }
+    total() { return this.cards.reduce((a, b) => a + b, 0); }
+    clone() { return new Hand(this.cards, this.isCK); }
+    add(cardType, amount = 1) {
+      const idx = CARD_INDEX[cardType];
+      if (idx === undefined) return this;
+      const newHand = this.clone();
+      if (idx < newHand.cards.length) newHand.cards[idx] += amount;
+      return newHand;
+    }
+    subtract(cardType, amount = 1) { return this.add(cardType, -amount); }
+    isValid() { return this.cards.every(c => c >= 0); }
+    equals(other) { return this.cards.every((c, i) => c === (other.cards[i] || 0)); }
+    hash() { return this.cards.join(','); }
+    toObject() {
+      const obj = {};
+      CARD_RESOURCES.forEach((r, i) => obj[r] = this.cards[i]);
+      if (this.isCK) CARD_COMMODITIES.forEach((c, i) => obj[c] = this.cards[5 + i]);
+      return obj;
+    }
+    getStealableTypes() {
+      const types = [];
+      const allTypes = this.isCK ? ALL_CARD_TYPES : CARD_RESOURCES;
+      for (const cardType of allTypes) {
+        if (this.get(cardType) > 0) types.push(cardType);
+      }
+      return types;
+    }
+    static fromObject(obj, isCK = false) {
+      const cards = CARD_RESOURCES.map(r => obj[r] || 0);
+      if (isCK) CARD_COMMODITIES.forEach(c => cards.push(obj[c] || 0));
+      return new Hand(cards, isCK);
+    }
+  }
+
+  class TrackerGameState {
+    constructor(playerCount, hands = null, probability = 1.0, isCK = false) {
+      this.playerCount = playerCount;
+      this.isCK = isCK;
+      this.hands = hands || new Map();
+      this.probability = probability;
+      if (!hands) {
+        for (let i = 0; i < playerCount; i++) this.hands.set(i, new Hand(null, isCK));
+      }
+    }
+    clone() {
+      const newHands = new Map();
+      for (const [player, hand] of this.hands) newHands.set(player, hand.clone());
+      return new TrackerGameState(this.playerCount, newHands, this.probability, this.isCK);
+    }
+    getHand(player) { return this.hands.get(player); }
+    isValid(constraints = {}) {
+      for (const [player, hand] of this.hands) {
+        if (!hand.isValid()) return false;
+        if (constraints.cardCounts && constraints.cardCounts[player] !== undefined) {
+          if (hand.total() !== constraints.cardCounts[player]) return false;
+        }
+      }
+      return true;
+    }
+    hash() {
+      const parts = [];
+      for (let i = 0; i < this.playerCount; i++) parts.push(`${i}:${this.hands.get(i).hash()}`);
+      return parts.join('|');
+    }
+  }
+
+  class CardTracker {
+    constructor(playerCount, options = {}) {
+      this.playerCount = playerCount;
+      this.maxWorlds = options.maxWorlds || 500;
+      this.pruneThreshold = options.pruneThreshold || 0.001;
+      this.isCK = options.citiesAndKnights || false;
+      this.worlds = [new TrackerGameState(playerCount, null, 1.0, this.isCK)];
+      this.cardCounts = {};
+      this.turnNumber = 0;
+    }
+
+    processProduction(productions) {
+      // productions is {playerColor: {cardType: amount}}
+      for (const world of this.worlds) {
+        for (const [playerId, resources] of Object.entries(productions)) {
+          const pid = parseInt(playerId);
+          let hand = world.getHand(pid);
+          if (!hand) continue;
+          for (const [cardType, amount] of Object.entries(resources)) {
+            hand = hand.add(cardType, amount);
+          }
+          world.hands.set(pid, hand);
+        }
+      }
+    }
+
+    processBuild(playerId, buildingType) {
+      const cost = BUILDING_COSTS[buildingType];
+      if (!cost) return;
+
+      const validWorlds = [];
+      for (const world of this.worlds) {
+        const hand = world.getHand(playerId);
+        if (!hand) { validWorlds.push(world); continue; }
+        let canBuild = true;
+        for (const [cardType, amount] of Object.entries(cost)) {
+          if (hand.get(cardType) < amount) { canBuild = false; break; }
+        }
+        if (canBuild) {
+          let newHand = hand;
+          for (const [cardType, amount] of Object.entries(cost)) {
+            newHand = newHand.subtract(cardType, amount);
+          }
+          world.hands.set(playerId, newHand);
+          validWorlds.push(world);
+        }
+      }
+      this.worlds = validWorlds.length > 0 ? validWorlds : [this.worlds[0]];
+      this._renormalize();
+    }
+
+    processBankTrade(playerId, give, receive) {
+      const validWorlds = [];
+      for (const world of this.worlds) {
+        let hand = world.getHand(playerId);
+        if (!hand) { validWorlds.push(world); continue; }
+        let canTrade = true;
+        for (const [cardType, amount] of Object.entries(give)) {
+          if (hand.get(cardType) < amount) { canTrade = false; break; }
+          hand = hand.subtract(cardType, amount);
+        }
+        if (canTrade) {
+          for (const [cardType, amount] of Object.entries(receive)) {
+            hand = hand.add(cardType, amount);
+          }
+          world.hands.set(playerId, hand);
+          validWorlds.push(world);
+        }
+      }
+      this.worlds = validWorlds.length > 0 ? validWorlds : [this.worlds[0]];
+      this._renormalize();
+    }
+
+    processPlayerTrade(player1, give1, player2, give2) {
+      const validWorlds = [];
+      for (const world of this.worlds) {
+        let hand1 = world.getHand(player1);
+        let hand2 = world.getHand(player2);
+        if (!hand1 || !hand2) { validWorlds.push(world); continue; }
+        let canTrade = true;
+        for (const [cardType, amount] of Object.entries(give1)) {
+          if (hand1.get(cardType) < amount) { canTrade = false; break; }
+        }
+        if (canTrade) {
+          for (const [cardType, amount] of Object.entries(give2)) {
+            if (hand2.get(cardType) < amount) { canTrade = false; break; }
+          }
+        }
+        if (canTrade) {
+          for (const [cardType, amount] of Object.entries(give1)) {
+            hand1 = hand1.subtract(cardType, amount);
+            hand2 = hand2.add(cardType, amount);
+          }
+          for (const [cardType, amount] of Object.entries(give2)) {
+            hand2 = hand2.subtract(cardType, amount);
+            hand1 = hand1.add(cardType, amount);
+          }
+          world.hands.set(player1, hand1);
+          world.hands.set(player2, hand2);
+          validWorlds.push(world);
+        }
+      }
+      this.worlds = validWorlds.length > 0 ? validWorlds : [this.worlds[0]];
+      this._renormalize();
+    }
+
+    processSteal(thief, victim) {
+      const newWorlds = [];
+      const cardTypes = this.isCK ? ALL_CARD_TYPES : CARD_RESOURCES;
+
+      for (const world of this.worlds) {
+        const victimHand = world.getHand(victim);
+        if (!victimHand) { newWorlds.push(world); continue; }
+        const totalCards = victimHand.total();
+        if (totalCards === 0) { newWorlds.push(world); continue; }
+
+        for (const cardType of cardTypes) {
+          const count = victimHand.get(cardType);
+          if (count === 0) continue;
+          const stealProb = count / totalCards;
+          const newWorld = world.clone();
+          newWorld.probability = world.probability * stealProb;
+          const newVictimHand = victimHand.subtract(cardType, 1);
+          const newThiefHand = world.getHand(thief).add(cardType, 1);
+          newWorld.hands.set(victim, newVictimHand);
+          newWorld.hands.set(thief, newThiefHand);
+          newWorlds.push(newWorld);
+        }
+      }
+      this.worlds = newWorlds;
+      this._mergeAndPrune();
+    }
+
+    processDiscard(playerId, discarded) {
+      const validWorlds = [];
+      for (const world of this.worlds) {
+        let hand = world.getHand(playerId);
+        if (!hand) { validWorlds.push(world); continue; }
+        let canDiscard = true;
+        for (const [cardType, amount] of Object.entries(discarded)) {
+          if (hand.get(cardType) < amount) { canDiscard = false; break; }
+          hand = hand.subtract(cardType, amount);
+        }
+        if (canDiscard) {
+          world.hands.set(playerId, hand);
+          validWorlds.push(world);
+        }
+      }
+      this.worlds = validWorlds.length > 0 ? validWorlds : [this.worlds[0]];
+      this._renormalize();
+    }
+
+    processMonopoly(playerId, cardType, takenFrom) {
+      const validWorlds = [];
+      for (const world of this.worlds) {
+        let canProcess = true;
+        let thiefHand = world.getHand(playerId);
+        if (!thiefHand) { validWorlds.push(world); continue; }
+        for (const [victimId, amount] of Object.entries(takenFrom)) {
+          const vid = parseInt(victimId);
+          const victimHand = world.getHand(vid);
+          if (!victimHand || victimHand.get(cardType) < amount) { canProcess = false; break; }
+          world.hands.set(vid, victimHand.subtract(cardType, amount));
+          thiefHand = thiefHand.add(cardType, amount);
+        }
+        if (canProcess) {
+          world.hands.set(playerId, thiefHand);
+          validWorlds.push(world);
+        }
+      }
+      this.worlds = validWorlds.length > 0 ? validWorlds : [this.worlds[0]];
+      this._renormalize();
+    }
+
+    processYearOfPlenty(playerId, resources) {
+      for (const world of this.worlds) {
+        let hand = world.getHand(playerId);
+        if (!hand) continue;
+        for (const [cardType, amount] of Object.entries(resources)) {
+          hand = hand.add(cardType, amount);
+        }
+        world.hands.set(playerId, hand);
+      }
+    }
+
+    setCardCount(playerId, count) {
+      this.cardCounts[playerId] = count;
+    }
+
+    setAllCardCounts(counts) {
+      this.cardCounts = { ...counts };
+      this._applyConstraints();
+    }
+
+    _applyConstraints() {
+      const constraints = { cardCounts: this.cardCounts };
+      this.worlds = this.worlds.filter(w => w.isValid(constraints));
+      if (this.worlds.length === 0) {
+        this.worlds = [new TrackerGameState(this.playerCount, null, 1.0, this.isCK)];
+      }
+      this._mergeAndPrune();
+    }
+
+    _renormalize() {
+      const total = this.worlds.reduce((sum, w) => sum + w.probability, 0);
+      if (total > 0) for (const world of this.worlds) world.probability /= total;
+    }
+
+    _mergeAndPrune() {
+      const worldMap = new Map();
+      for (const world of this.worlds) {
+        const hash = world.hash();
+        if (worldMap.has(hash)) worldMap.get(hash).probability += world.probability;
+        else worldMap.set(hash, world);
+      }
+      this.worlds = Array.from(worldMap.values());
+      this._renormalize();
+      this.worlds = this.worlds.filter(w => w.probability >= this.pruneThreshold);
+      if (this.worlds.length > this.maxWorlds) {
+        this.worlds.sort((a, b) => b.probability - a.probability);
+        this.worlds = this.worlds.slice(0, this.maxWorlds);
+      }
+      this._renormalize();
+    }
+
+    getMarginals(playerId) {
+      const marginals = {};
+      const cardTypes = this.isCK ? ALL_CARD_TYPES : CARD_RESOURCES;
+      for (const cardType of cardTypes) {
+        let expectedValue = 0, min = Infinity, max = -Infinity;
+        for (const world of this.worlds) {
+          const hand = world.getHand(playerId);
+          if (!hand) continue;
+          const count = hand.get(cardType);
+          expectedValue += count * world.probability;
+          min = Math.min(min, count);
+          max = Math.max(max, count);
+        }
+        marginals[cardType] = { expected: expectedValue, min: min === Infinity ? 0 : min, max: max === -Infinity ? 0 : max };
+      }
+      let expectedTotal = 0;
+      for (const world of this.worlds) {
+        const hand = world.getHand(playerId);
+        if (hand) expectedTotal += hand.total() * world.probability;
+      }
+      marginals.total = { expected: expectedTotal };
+      return marginals;
+    }
+
+    getConfidence() {
+      // Confidence based on number of worlds - fewer worlds = higher confidence
+      if (this.worlds.length === 1) return 1.0;
+      if (this.worlds.length <= 5) return 0.9;
+      if (this.worlds.length <= 20) return 0.7;
+      if (this.worlds.length <= 50) return 0.5;
+      return 0.3;
+    }
+
+    nextTurn() { this.turnNumber++; }
+
+    getDebugInfo() {
+      return {
+        worldCount: this.worlds.length,
+        cardCounts: this.cardCounts,
+        confidence: this.getConfidence()
+      };
+    }
+  }
+
+  // Card tracker instance
+  let cardTracker = null;
+  let lastProcessedLogIndex = -1;
+
+  // Initialize or reset the card tracker
+  function initCardTracker() {
+    const activePlayers = getActivePlayers();
+    if (activePlayers.length === 0) return;
+    const isCK = isCitiesAndKnights();
+    cardTracker = new CardTracker(activePlayers.length, { citiesAndKnights: isCK });
+    lastProcessedLogIndex = -1;
+    log('Card tracker initialized', { players: activePlayers.length, isCK });
+  }
+
+  // Convert card enum array to resource object
+  function cardEnumsToObject(cardEnums) {
+    const result = {};
+    if (!cardEnums) return result;
+    for (const cardEnum of cardEnums) {
+      const cardType = CARD_TYPE_MAP[cardEnum];
+      if (cardType) result[cardType] = (result[cardType] || 0) + 1;
+    }
+    return result;
+  }
+
+  // Process game log events for card tracking
+  function processGameLogForCards() {
+    if (!gameStore || !cardTracker) return;
+    const gs = gameStore.getState().gameState;
+    const logState = gs.gameLogState;
+    if (!logState) return;
+
+    // Get sorted log entries
+    const entries = Object.entries(logState)
+      .map(([idx, e]) => ({ idx: parseInt(idx), ...e }))
+      .filter(e => e.idx > lastProcessedLogIndex)
+      .sort((a, b) => a.idx - b.idx);
+
+    if (entries.length === 0) return;
+
+    for (const entry of entries) {
+      const t = entry.text;
+      if (!t) continue;
+      const pc = t.playerColor;
+
+      try {
+        // Production events (type 11 = got resources)
+        if (t.type === 11 && t.cardEnums && pc !== undefined) {
+          const resources = cardEnumsToObject(t.cardEnums);
+          if (Object.keys(resources).length > 0) {
+            cardTracker.processProduction({ [pc]: resources });
+          }
+        }
+
+        // Build events
+        // Type 1 = built road, Type 2 = built settlement, Type 3 = built city
+        // Type 4 = bought dev card
+        if (t.type === 1 && pc !== undefined) cardTracker.processBuild(pc, 'road');
+        if (t.type === 2 && pc !== undefined) cardTracker.processBuild(pc, 'settlement');
+        if (t.type === 3 && pc !== undefined) cardTracker.processBuild(pc, 'city');
+        if (t.type === 4 && pc !== undefined) cardTracker.processBuild(pc, 'devCard');
+
+        // C&K builds
+        if (t.type === 79 && pc !== undefined) cardTracker.processBuild(pc, 'cityWall');
+        if (t.type === 80 && pc !== undefined) cardTracker.processBuild(pc, 'knight');
+
+        // Steal events (robber, knight)
+        // Type 16 = robbed by player
+        if (t.type === 16 && t.playerColorThief !== undefined && t.playerColorVictim !== undefined) {
+          cardTracker.processSteal(t.playerColorThief, t.playerColorVictim);
+        }
+        // Type 78 = knight steal in C&K
+        if (t.type === 78 && pc !== undefined && t.playerColorVictim !== undefined) {
+          cardTracker.processSteal(pc, t.playerColorVictim);
+        }
+
+        // Discard events (type 55)
+        if (t.type === 55 && t.cardEnums && pc !== undefined) {
+          const discarded = cardEnumsToObject(t.cardEnums);
+          if (Object.keys(discarded).length > 0) {
+            cardTracker.processDiscard(pc, discarded);
+          }
+        }
+
+        // Bank trade (type 17 = traded with bank)
+        if (t.type === 17 && pc !== undefined && t.offeredCardEnums && t.wantedCardEnums) {
+          const give = cardEnumsToObject(t.offeredCardEnums);
+          const receive = cardEnumsToObject(t.wantedCardEnums);
+          if (Object.keys(give).length > 0 && Object.keys(receive).length > 0) {
+            cardTracker.processBankTrade(pc, give, receive);
+          }
+        }
+
+        // Player trade (type 18 = traded with player)
+        if (t.type === 18 && t.playerColor !== undefined && t.playerColorPartner !== undefined) {
+          const give1 = cardEnumsToObject(t.offeredCardEnums);
+          const give2 = cardEnumsToObject(t.wantedCardEnums);
+          cardTracker.processPlayerTrade(t.playerColor, give1, t.playerColorPartner, give2);
+        }
+
+        // Monopoly (type 6 = monopoly played)
+        if (t.type === 6 && pc !== undefined && t.cardEnum !== undefined) {
+          const cardType = CARD_TYPE_MAP[t.cardEnum];
+          if (cardType && t.stolenCards) {
+            // stolenCards is {playerColor: amount}
+            cardTracker.processMonopoly(pc, cardType, t.stolenCards);
+          }
+        }
+
+        // Year of Plenty (type 7 = year of plenty played)
+        if (t.type === 7 && pc !== undefined && t.cardEnums) {
+          const resources = cardEnumsToObject(t.cardEnums);
+          if (Object.keys(resources).length > 0) {
+            cardTracker.processYearOfPlenty(pc, resources);
+          }
+        }
+
+      } catch (err) {
+        console.warn('PearsonRAE: Error processing log entry', entry, err);
+      }
+
+      lastProcessedLogIndex = Math.max(lastProcessedLogIndex, entry.idx);
+    }
+
+    // After processing events, apply card count constraints
+    const counts = getAllCardCounts();
+    cardTracker.setAllCardCounts(counts);
+  }
+
+  // Get hand estimates for all players
+  function getHandEstimates() {
+    if (!cardTracker) return null;
+    const activePlayers = getActivePlayers();
+    const estimates = {};
+    for (const p of activePlayers) {
+      estimates[p] = cardTracker.getMarginals(p);
+    }
+    return {
+      players: estimates,
+      confidence: cardTracker.getConfidence(),
+      worldCount: cardTracker.worlds.length
+    };
+  }
+
   // Cache for player info
   let playerInfoCache = {};
 
@@ -186,6 +701,8 @@
     rollHistory = [];
     lastKnownRollCount = 0;
     playerInfoCache = {}; // Clear player name cache
+    cardTracker = null;
+    lastProcessedLogIndex = -1;
   }
 
   function diceProbability(n) {
@@ -776,6 +1293,7 @@
     const tabs = [
       { id: 'main', label: 'Main' },
       { id: 'resources', label: 'Res' },
+      { id: 'hands', label: 'Hands' },
       { id: 'graph', label: 'Graph' },
       { id: 'dice', label: 'Dice' },
       { id: 'sevens', label: '7s' },
@@ -957,6 +1475,82 @@
       html += '</div>';
     });
     return html + '</div>';
+  }
+
+  function renderHandsView() {
+    const estimates = getHandEstimates();
+    if (!estimates) {
+      return '<div style="text-align:center;padding:30px;color:#666;">Card tracker initializing...</div>';
+    }
+
+    const activePlayers = getActivePlayers();
+    const isCK = isCitiesAndKnights();
+    const cardTypes = isCK ? ALL_CARD_TYPES : CARD_RESOURCES;
+
+    // Confidence indicator
+    const conf = estimates.confidence;
+    const confPct = Math.round(conf * 100);
+    const confLabel = conf >= 0.9 ? 'High' : conf >= 0.7 ? 'Good' : conf >= 0.5 ? 'Medium' : 'Low';
+    const confColor = conf >= 0.9 ? '#2ecc71' : conf >= 0.7 ? '#27ae60' : conf >= 0.5 ? '#f39c12' : '#e74c3c';
+
+    let html = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;padding:6px 8px;background:rgba(255,255,255,0.03);border-radius:6px;">
+        <span style="font-size:10px;color:#666;">Tracking ${estimates.worldCount} possible states</span>
+        <span style="font-size:10px;color:${confColor};">${confLabel} confidence (${confPct}%)</span>
+      </div>`;
+
+    html += '<div style="display:flex;flex-direction:column;gap:8px;">';
+
+    activePlayers.forEach(p => {
+      const pc = getPlayerInfo(p);
+      const marginals = estimates.players[p];
+      if (!marginals) return;
+
+      const actualCount = getPlayerCardCount(p);
+
+      html += `<div style="background:rgba(255,255,255,0.05);border-radius:8px;padding:10px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <span style="color:${pc.hex};font-weight:600;font-size:12px;">${pc.name}</span>
+          <span style="color:#888;font-size:10px;">${actualCount} cards</span>
+        </div>`;
+
+      // Show card estimates in a grid
+      const activeCards = cardTypes.filter(ct => {
+        const m = marginals[ct];
+        return m && (m.expected > 0.01 || m.max > 0);
+      });
+
+      if (activeCards.length === 0) {
+        html += '<div style="color:#555;font-size:10px;text-align:center;padding:8px;">No cards detected</div>';
+      } else {
+        html += `<div style="display:grid;grid-template-columns:repeat(${Math.min(activeCards.length, 5)},1fr);gap:4px;">`;
+        activeCards.forEach(ct => {
+          const m = marginals[ct];
+          const emoji = CARD_EMOJI[ct];
+          const expected = m.expected;
+          const range = m.min === m.max ? `${m.min}` : `${m.min}-${m.max}`;
+          const isCertain = m.min === m.max && m.max > 0;
+          const bgColor = isCertain ? 'rgba(46,204,113,0.15)' : 'rgba(0,0,0,0.2)';
+
+          html += `
+            <div style="text-align:center;padding:6px 4px;background:${bgColor};border-radius:4px;" title="${ct}: ${range}">
+              <div style="font-size:13px;">${emoji}</div>
+              <div style="font-size:12px;font-weight:600;color:${isCertain ? '#2ecc71' : '#fff'};">${expected.toFixed(1)}</div>
+              <div style="font-size:9px;color:#666;">${range}</div>
+            </div>`;
+        });
+        html += '</div>';
+      }
+      html += '</div>';
+    });
+
+    html += '</div>';
+
+    html += `<div style="margin-top:10px;font-size:9px;color:#555;text-align:center;">
+      Green = certain count · Range shows possible values
+    </div>`;
+
+    return html;
   }
 
   function renderGraphView(stats) {
@@ -1339,12 +1933,16 @@
       return;
     }
 
+    // Process game log for card tracking
+    processGameLogForCards();
+
     const stats = getAllPlayersStats();
     const rolls = getDiceRolls();
     let html = renderTabs();
     switch (currentView) {
       case 'main': html += renderMainView(stats, rolls); break;
       case 'resources': html += renderResourcesView(stats); break;
+      case 'hands': html += renderHandsView(); break;
       case 'graph': html += renderGraphView(stats); break;
       case 'dice': html += renderDiceView(rolls); break;
       case 'sevens': html += renderSevensView(); break;
@@ -1371,6 +1969,7 @@
     gameStore = findGameStore(fiber);
     if (!gameStore) { log('GameStore not found, retrying...'); setTimeout(init, 2000); return; }
     log('Game store found, creating overlay');
+    initCardTracker();
     createOverlay();
     updateOverlay();
     if (unsubscribe) unsubscribe();
@@ -1385,6 +1984,8 @@
     getSevens: analyzeSevens,
     getRobberStats: analyzeRobberStats,
     getTurnTimes: analyzeTurnTimes,
+    getHands: getHandEstimates,
+    getCardTracker: () => cardTracker,
     getDebugLog: () => debugLog,
     getDetailedStats: calcDetailedStats,
     refresh: init,
