@@ -99,7 +99,7 @@ class GameSimulator {
     }
 
     if (Object.keys(productions).length > 0) {
-      this.events.push({
+      this._pushEvent({
         type: 'production',
         turn: this.turnNumber,
         data: productions
@@ -141,7 +141,7 @@ class GameSimulator {
           this.bank[resource] += amount;
         }
 
-        this.events.push({
+        this._pushEvent({
           type: 'build',
           turn: this.turnNumber,
           player: playerId,
@@ -184,7 +184,7 @@ class GameSimulator {
       this.bank[giveResource] += 4;
       this.bank[receiveResource] -= 1;
 
-      this.events.push({
+      this._pushEvent({
         type: 'bankTrade',
         turn: this.turnNumber,
         player: playerId,
@@ -228,7 +228,7 @@ class GameSimulator {
     this.hands[player2][give2Resource] -= 1;
     this.hands[player2][give1Resource] += 1;
 
-    this.events.push({
+    this._pushEvent({
       type: 'playerTrade',
       turn: this.turnNumber,
       player1,
@@ -271,7 +271,7 @@ class GameSimulator {
       resource: stolenResource
     });
 
-    this.events.push({
+    this._pushEvent({
       type: 'steal',
       turn: this.turnNumber,
       thief,
@@ -312,7 +312,7 @@ class GameSimulator {
         remaining--;
       }
 
-      this.events.push({
+      this._pushEvent({
         type: 'discard',
         turn: this.turnNumber,
         player: playerId,
@@ -345,7 +345,7 @@ class GameSimulator {
 
     if (Object.keys(takenFrom).length === 0) return null;
 
-    this.events.push({
+    this._pushEvent({
       type: 'monopoly',
       turn: this.turnNumber,
       player: playerId,
@@ -378,7 +378,7 @@ class GameSimulator {
 
     if (Object.keys(resources).length === 0) return null;
 
-    this.events.push({
+    this._pushEvent({
       type: 'yearOfPlenty',
       turn: this.turnNumber,
       player: playerId,
@@ -420,6 +420,26 @@ class GameSimulator {
     if (roll <= 0) return this.generateDiscard();
 
     return this.generateProduction();
+  }
+
+  /**
+   * Get current card counts for all players
+   */
+  getAllCardCounts() {
+    const counts = {};
+    for (let i = 1; i <= this.playerCount; i++) {
+      counts[i] = this.getCardCount(i);
+    }
+    return counts;
+  }
+
+  /**
+   * Push event with current card counts snapshot
+   */
+  _pushEvent(eventData) {
+    // Capture card counts at time of event (like in real game where counts are always visible)
+    eventData.cardCounts = this.getAllCardCounts();
+    this.events.push(eventData);
   }
 
   /**
@@ -515,6 +535,17 @@ function runSimulationTest(options = {}) {
         tracker.processYearOfPlenty(event.player, event.resources);
         break;
     }
+
+    // Apply known card counts - constrains possible worlds
+    if (event.cardCounts) {
+      // Convert string keys to integers
+      const counts = {};
+      for (const [pid, count] of Object.entries(event.cardCounts)) {
+        counts[parseInt(pid)] = count;
+      }
+      tracker.setAllCardCounts(counts);
+    }
+
     tracker.nextTurn();
   }
 

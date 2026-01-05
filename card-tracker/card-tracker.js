@@ -326,7 +326,7 @@ class CardTracker {
       }
     }
 
-    this.cardCounts[playerId] = (this.cardCounts[playerId] || 0) - Object.values(cost).reduce((a, b) => a + b, 0);
+    // Don't track internal cardCounts - let external caller set them via setCardCount
   }
 
   /**
@@ -662,7 +662,7 @@ class CardTracker {
     for (const [playerId, resources] of Object.entries(productions)) {
       const pid = parseInt(playerId);
       const added = Object.values(resources).reduce((a, b) => a + b, 0);
-      this.cardCounts[pid] = (this.cardCounts[pid] || 0) + added;
+      // Don't track internal cardCounts - let external caller set them via setCardCount
     }
   }
 
@@ -671,6 +671,15 @@ class CardTracker {
    */
   setCardCount(playerId, count) {
     this.cardCounts[playerId] = count;
+    // Don't apply constraints immediately - use setAllCardCounts for batch updates
+  }
+
+  /**
+   * Set card counts for all players at once, then apply constraints
+   * This is the preferred method when you have counts for all players
+   */
+  setAllCardCounts(counts) {
+    this.cardCounts = { ...counts };
     this._applyConstraints();
   }
 
@@ -695,10 +704,12 @@ class CardTracker {
 
     if (this.worlds.length === 0) {
       console.warn('All worlds invalidated by constraints! Resetting...');
-      this.worlds = [new GameState(this.playerCount)];
+      this.worlds = [new GameState(this.playerCount, null, 1.0, this.isCK)];
     }
 
-    this._renormalize();
+    // Merge identical worlds after constraint filtering - critical for collapsing
+    // uncertainty when players reach 0 cards or constraints make worlds identical
+    this._mergeAndPrune();
   }
 
   /**
