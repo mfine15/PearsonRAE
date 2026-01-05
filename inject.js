@@ -555,6 +555,123 @@
     };
   }
 
+  // Analyze robber placement - who gets robbed/stolen from most
+  function analyzeRobberStats() {
+    if (!gameStore) return { stealsByVictim: {}, stealsByThief: {} };
+    const gs = gameStore.getState().gameState;
+    const logState = gs.gameLogState;
+    const activePlayers = getActivePlayers();
+
+    const stealsByVictim = {};
+    const stealsByThief = {};
+    activePlayers.forEach(p => {
+      stealsByVictim[p] = 0;
+      stealsByThief[p] = 0;
+    });
+
+    // Steal event types: 16, 78, 105, 106
+    Object.values(logState).forEach(entry => {
+      const t = entry.text;
+      if (!t) return;
+
+      let thief = null, victim = null;
+
+      if (t.type === 16 && t.playerColorVictim !== undefined) {
+        thief = t.playerColorThief;
+        victim = t.playerColorVictim;
+      } else if (t.type === 78 && t.playerColorVictim !== undefined) {
+        thief = t.playerColor;
+        victim = t.playerColorVictim;
+      } else if (t.type === 105 && t.playerColorVictim !== undefined) {
+        thief = t.playerColorThief;
+        victim = t.playerColorVictim;
+      } else if (t.type === 106 && t.playerColorVictim !== undefined) {
+        thief = t.playerColor;
+        victim = t.playerColorVictim;
+      }
+
+      if (victim !== null && stealsByVictim[victim] !== undefined) {
+        stealsByVictim[victim]++;
+      }
+      if (thief !== null && stealsByThief[thief] !== undefined) {
+        stealsByThief[thief]++;
+      }
+    });
+
+    return { stealsByVictim, stealsByThief, activePlayers };
+  }
+
+  // Analyze turn times per player using dice roll timestamps
+  function analyzeTurnTimes() {
+    if (!gameStore) return { playerTurnStats: {}, activePlayers: [] };
+    const gs = gameStore.getState().gameState;
+    const logState = gs.gameLogState;
+    const activePlayers = getActivePlayers();
+
+    // Find all dice rolls with their log indices (which correlate with time order)
+    const rollEntries = Object.entries(logState)
+      .filter(([_, e]) => e.text?.type === 10)
+      .map(([idx, e]) => ({
+        logIndex: parseInt(idx),
+        player: e.from,
+        timestamp: e.timestamp || null
+      }))
+      .sort((a, b) => a.logIndex - b.logIndex);
+
+    // Calculate turn durations between consecutive rolls
+    const playerTurnStats = {};
+    activePlayers.forEach(p => {
+      playerTurnStats[p] = {
+        turnCount: 0,
+        totalTime: 0,
+        avgTime: 0,
+        minTime: Infinity,
+        maxTime: 0,
+        turnTimes: []
+      };
+    });
+
+    // We estimate turn time as time from one player's roll to the next roll (by any player)
+    // This isn't perfect but gives relative comparison
+    for (let i = 0; i < rollEntries.length - 1; i++) {
+      const currentRoll = rollEntries[i];
+      const nextRoll = rollEntries[i + 1];
+      const player = currentRoll.player;
+
+      // Use log index difference as proxy for time if no timestamps
+      // Log entries are sequential, so index difference roughly correlates with turn complexity
+      let duration;
+      if (currentRoll.timestamp && nextRoll.timestamp) {
+        duration = nextRoll.timestamp - currentRoll.timestamp;
+      } else {
+        // Use log index difference * 2 as rough seconds estimate
+        duration = (nextRoll.logIndex - currentRoll.logIndex) * 2000;
+      }
+
+      // Filter out unreasonable durations (> 5 min probably AFK, < 3s probably error)
+      if (duration < 3000 || duration > 300000) continue;
+
+      if (playerTurnStats[player]) {
+        playerTurnStats[player].turnCount++;
+        playerTurnStats[player].totalTime += duration;
+        playerTurnStats[player].turnTimes.push(duration);
+        if (duration < playerTurnStats[player].minTime) playerTurnStats[player].minTime = duration;
+        if (duration > playerTurnStats[player].maxTime) playerTurnStats[player].maxTime = duration;
+      }
+    }
+
+    // Calculate averages
+    activePlayers.forEach(p => {
+      const stats = playerTurnStats[p];
+      if (stats.turnCount > 0) {
+        stats.avgTime = stats.totalTime / stats.turnCount;
+      }
+      if (stats.minTime === Infinity) stats.minTime = 0;
+    });
+
+    return { playerTurnStats, activePlayers, totalTurns: rollEntries.length };
+  }
+
   function calcDetailedStats(playerColor) {
     const rolls = getDiceRolls();
     const isCK = isCitiesAndKnights();
@@ -662,6 +779,7 @@
       { id: 'graph', label: 'Graph' },
       { id: 'dice', label: 'Dice' },
       { id: 'sevens', label: '7s' },
+      { id: 'time', label: '⏱' },
       { id: 'debug', label: '⚙' }
     ];
 
@@ -999,8 +1117,93 @@
     return html;
   }
 
+  function renderTimeView() {
+    const timeData = analyzeTurnTimes();
+    const activePlayers = timeData.activePlayers;
+
+    if (timeData.totalTurns < 2) {
+      return '<div style="text-align:center;padding:30px;color:#666;">Need more turns to analyze timing...</div>';
+    }
+
+    // Format time in seconds
+    const formatTime = (ms) => {
+      const secs = Math.round(ms / 1000);
+      if (secs < 60) return `${secs}s`;
+      const mins = Math.floor(secs / 60);
+      const remSecs = secs % 60;
+      return `${mins}:${remSecs.toString().padStart(2, '0')}`;
+    };
+
+    // Find slowest/fastest players
+    const validStats = activePlayers
+      .map(p => ({ player: p, stats: timeData.playerTurnStats[p] }))
+      .filter(x => x.stats.turnCount > 0);
+
+    const slowest = validStats.reduce((a, b) => a.stats.avgTime > b.stats.avgTime ? a : b, validStats[0]);
+    const fastest = validStats.reduce((a, b) => a.stats.avgTime < b.stats.avgTime ? a : b, validStats[0]);
+
+    let html = `
+      <div style="display:flex;gap:12px;margin-bottom:14px;">
+        <div style="flex:1;background:rgba(255,255,255,0.05);border-radius:8px;padding:12px;text-align:center;">
+          <div style="font-size:20px;font-weight:700;color:#2ecc71;">${fastest ? formatTime(fastest.stats.avgTime) : '—'}</div>
+          <div style="font-size:10px;color:#666;margin-top:2px;">fastest avg</div>
+          <div style="font-size:9px;color:${fastest ? getPlayerInfo(fastest.player).hex : '#666'};">${fastest ? getPlayerInfo(fastest.player).name : ''}</div>
+        </div>
+        <div style="flex:1;background:rgba(255,255,255,0.05);border-radius:8px;padding:12px;text-align:center;">
+          <div style="font-size:20px;font-weight:700;color:#e74c3c;">${slowest ? formatTime(slowest.stats.avgTime) : '—'}</div>
+          <div style="font-size:10px;color:#666;margin-top:2px;">slowest avg</div>
+          <div style="font-size:9px;color:${slowest ? getPlayerInfo(slowest.player).hex : '#666'};">${slowest ? getPlayerInfo(slowest.player).name : ''}</div>
+        </div>
+      </div>`;
+
+    // Per-player turn time stats
+    html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;padding:0 4px;">
+      <span style="font-size:10px;color:#555;">Player</span>
+      <div style="display:flex;gap:20px;">
+        <span style="font-size:10px;color:#555;width:35px;text-align:center;">Avg</span>
+        <span style="font-size:10px;color:#555;width:60px;text-align:center;">Range</span>
+      </div>
+    </div>`;
+    html += '<div style="display:flex;flex-direction:column;gap:6px;">';
+
+    activePlayers.forEach(p => {
+      const ps = timeData.playerTurnStats[p];
+      const pc = getPlayerInfo(p);
+      const isSlowest = slowest && slowest.player === p;
+      const isFastest = fastest && fastest.player === p;
+
+      html += `
+        <div style="background:rgba(255,255,255,0.05);border-radius:8px;padding:10px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <span style="color:${pc.hex};font-weight:600;">${pc.name}</span>
+              <span style="font-size:10px;color:#666;">${ps.turnCount} turns</span>
+              ${isSlowest ? '<span style="font-size:10px;">🐢</span>' : ''}
+              ${isFastest ? '<span style="font-size:10px;">⚡</span>' : ''}
+            </div>
+            <div style="display:flex;gap:20px;align-items:center;">
+              <span style="font-size:14px;font-weight:600;width:35px;text-align:center;color:${isSlowest ? '#e74c3c' : isFastest ? '#2ecc71' : '#fff'};">
+                ${ps.turnCount > 0 ? formatTime(ps.avgTime) : '—'}
+              </span>
+              <span style="font-size:10px;width:60px;text-align:center;color:#666;">
+                ${ps.turnCount > 0 ? `${formatTime(ps.minTime)}–${formatTime(ps.maxTime)}` : '—'}
+              </span>
+            </div>
+          </div>
+        </div>`;
+    });
+    html += '</div>';
+
+    html += `<div style="margin-top:12px;font-size:9px;color:#555;text-align:center;">
+      Time = roll to next roll (includes opponents' reactions)
+    </div>`;
+
+    return html;
+  }
+
   function renderSevensView() {
     const sevensData = analyzeSevens();
+    const robberStats = analyzeRobberStats();
     const aboveExp = parseFloat(sevensData.aboveExpectedSevens);
     const activePlayers = sevensData.activePlayers || getActivePlayers();
 
@@ -1031,7 +1234,10 @@
     // Per-player vulnerability stats - header
     html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;padding:0 4px;">
       <span style="font-size:10px;color:#555;">Player</span>
-      <span style="font-size:10px;color:#555;" title="7s hit while vulnerable minus expected">7s Luck</span>
+      <div style="display:flex;gap:16px;">
+        <span style="font-size:10px;color:#555;width:50px;text-align:center;" title="Times robbed / Times stole">🏴‍☠️</span>
+        <span style="font-size:10px;color:#555;width:40px;text-align:right;" title="7s hit while vulnerable minus expected">7s Luck</span>
+      </div>
     </div>`;
     html += '<div style="display:flex;flex-direction:column;gap:6px;">';
 
@@ -1043,6 +1249,9 @@
       const isVulnerable = ps.currentCards > limit;
       const luck = ps.sevenLuck;
       const hasWallBonus = limit > 7;
+      const stolenFrom = robberStats.stealsByVictim[p] || 0;
+      const stole = robberStats.stealsByThief[p] || 0;
+      const robberNet = stole - stolenFrom;
 
       html += `
         <div style="background:rgba(255,255,255,0.05);border-radius:8px;padding:10px;">
@@ -1053,9 +1262,14 @@
                 ${ps.currentCards}/${limit}${hasWallBonus ? ' 🏰' : ''}${isVulnerable ? ' ⚠️' : ''}
               </span>
             </div>
-            <span style="font-size:14px;font-weight:600;color:${luck < -0.1 ? '#2ecc71' : luck > 0.1 ? '#e74c3c' : '#666'};" title="${luck < 0 ? 'Lucky: fewer 7s hit than expected' : luck > 0 ? 'Unlucky: more 7s hit than expected' : 'Neutral'}">
-              ${luck > 0 ? '+' : ''}${luck.toFixed(1)}
-            </span>
+            <div style="display:flex;gap:16px;align-items:center;">
+              <span style="font-size:11px;width:50px;text-align:center;" title="Robbed ${stolenFrom}× / Stole ${stole}×">
+                <span style="color:#e74c3c;">-${stolenFrom}</span>/<span style="color:#2ecc71;">+${stole}</span>
+              </span>
+              <span style="font-size:14px;font-weight:600;width:40px;text-align:right;color:${luck < -0.1 ? '#2ecc71' : luck > 0.1 ? '#e74c3c' : '#666'};" title="${luck < 0 ? 'Lucky: fewer 7s hit than expected' : luck > 0 ? 'Unlucky: more 7s hit than expected' : 'Neutral'}">
+                ${luck > 0 ? '+' : ''}${luck.toFixed(1)}
+              </span>
+            </div>
           </div>
           ${ps.rollsWhileVulnerable > 0 ? `
           <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:12px;font-size:10px;color:#666;">
@@ -1134,6 +1348,7 @@
       case 'graph': html += renderGraphView(stats); break;
       case 'dice': html += renderDiceView(rolls); break;
       case 'sevens': html += renderSevensView(); break;
+      case 'time': html += renderTimeView(); break;
       case 'debug': html += renderDebugView(stats); break;
     }
     overlay.innerHTML = html;
@@ -1168,6 +1383,8 @@
     getStats: getAllPlayersStats,
     getRolls: getDiceRolls,
     getSevens: analyzeSevens,
+    getRobberStats: analyzeRobberStats,
+    getTurnTimes: analyzeTurnTimes,
     getDebugLog: () => debugLog,
     getDetailedStats: calcDetailedStats,
     refresh: init,
